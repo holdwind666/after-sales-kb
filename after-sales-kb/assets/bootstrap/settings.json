@@ -1,0 +1,7 @@
+{
+  "weekly_auto_update_enabled": false,
+  "weekly_auto_update_schedule": "NOT_CONFIGURED - user must explicitly request enabling weekly auto update before scheduling; re-confirm on a new computer",
+  "miss_threshold": 3,
+  "miss_counter_file": "miss_counter.json",
+  "notes": "Cross-conversation miss counter: unanswered questions accumulate until threshold, then prompt user for incremental update; acknowledge resets the counter."
+}
