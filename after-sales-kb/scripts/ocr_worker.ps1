@@ -168,7 +168,7 @@ foreach ($pdf in $list) {
     }
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($pdf)
     $outText = Join-Path $OutDir ($baseName + ".txt")
-    if ((Test-Path -LiteralPath $outText) -and ((Get-Item -LiteralPath $outText).Length -gt 0)) {
+    if (-not $ForceOcr -and (Test-Path -LiteralPath $outText) -and ((Get-Item -LiteralPath $outText).Length -gt 0)) {
         $skip++
         continue
     }

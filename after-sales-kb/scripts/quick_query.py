@@ -1,0 +1,446 @@
+"""Hybrid retrieval for the after-sales knowledge base.
+
+Usage:
+  python quick_query.py --product "电热毯" --q "包装内容"
+  python quick_query.py --product "V10" --q "线长"
+  python quick_query.py --q "充電できない"
+  python quick_query.py --product "电热毯" --q "包装内容" --diagnose
+
+Retrieval pipeline:
+  1. Synonym expansion (quick_index/synonyms.tsv, data-driven).
+  2. Exact normalized substring match on page-grained OCR / FAQ / kdocs / spec.
+  3. Fuzzy scoring (rapidfuzz partial_ratio) for near-miss recall.
+  4. BM25 ranking (rank_bm25) over the same rows for relevance.
+  Final rank: exact > fuzzy*0.95 > bm25; deduped per (layer, doc, page).
+
+--diagnose: when nothing is found, inspect the layer pipeline and report
+where content may be lost (OCR page lengths, source PDF text layer status,
+page images for on-demand vision).
+"""
+
+import argparse
+import io
+import json
+import re
+import sys
+from pathlib import Path
+
+BASE = Path(r"E:\说明书与视频（第9台）\_售后模板缓存")
+OUT_DIR = BASE / "quick_index"
+OCR_DIR = BASE / "pdf_ocr"
+PAGES_DIR = BASE / "pdf_pages"
+SOURCE_ROOT = BASE.parent
+
+
+def norm(s: str) -> str:
+    return re.sub(r"\s+", "", s or "").lower()
+
+
+def load_synonyms():
+    """Load zh->ja synonym dictionary from quick_index/synonyms.tsv."""
+    p = OUT_DIR / "synonyms.tsv"
+    syn = {}
+    if not p.exists():
+        return syn
+    for line in p.read_text(encoding="utf-8").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            syn[parts[0]] = parts[1:]
+    return syn
+
+
+def query_terms(q: str):
+    qn = norm(q)
+    terms = [qn]
+    syn = load_synonyms()
+    for ja in syn.get(q, []):
+        terms.append(norm(ja))
+    # also reverse: if the query itself is a ja term, no zh mapping needed
+    return list(dict.fromkeys(t for t in terms if t))
+
+
+def tokenize(s: str):
+    """Lightweight tokenizer: ascii words + CJK bigrams + whole string."""
+    s = norm(s)
+    toks = []
+    ascii_part = re.sub(r"[^\x00-\x7f]+", " ", s).split()
+    toks.extend(ascii_part)
+    cjk = re.sub(r"[\x00-\x7f]+", "", s)
+    for i in range(len(cjk) - 1):
+        toks.append(cjk[i : i + 2])
+    if cjk:
+        toks.append(cjk)
+    return toks
+
+
+def load_rows(kind: str):
+    p = OUT_DIR / f"{kind}_norm.tsv"
+    rows = []
+    if not p.exists():
+        return rows
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if "\t" in line:
+            name, blob = line.split("\t", 1)
+            rows.append((name, blob))
+    return rows
+
+
+def load_faq_full():
+    """Load faq_full.jsonl: list of dicts {sheet, question, answer, template}."""
+    p = OUT_DIR / "faq_full.jsonl"
+    items = []
+    if not p.exists():
+        return items
+    for line in p.read_text(encoding="utf-8").splitlines():
+        try:
+            items.append(json.loads(line))
+        except Exception:
+            continue
+    return items
+
+
+def load_faq_lookup():
+    """Load precompiled faq_lookup.json (product -> entries with keys)."""
+    p = OUT_DIR / "faq_lookup.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def lookup_faq_fast(lookup, product, q, terms):
+    """Fast dictionary lookup: product -> entries whose keys match q or terms.
+
+    Returns up to 3 full entries (question/answer/template).
+    """
+    if not lookup:
+        return []
+    products = lookup.get("products", {})
+    entries = products.get(product, [])
+    if not entries:
+        return []
+    qn = norm(q)
+    hits = []
+    for e in entries:
+        keys = e.get("keys", [])
+        if qn in keys:
+            hits.append(e)
+            continue
+        if any(t in keys for t in terms):
+            hits.append(e)
+    return hits[:3]
+
+
+def find_faq_full(faq_items, sheet, blob, terms):
+    """Return full original FAQ entries matching sheet + one of terms."""
+    out = []
+    for item in faq_items:
+        if item.get("sheet") != sheet:
+            continue
+        hay = norm(
+            (item.get("question") or "")
+            + " "
+            + (item.get("answer") or "")
+            + " "
+            + (item.get("template") or "")
+        )
+        if any(t in hay for t in terms):
+            out.append(item)
+    return out
+
+
+def load_ocr_pages():
+    p = OUT_DIR / "ocr_pages.tsv"
+    rows = []
+    if not p.exists():
+        return rows
+    lines = p.read_text(encoding="utf-8").splitlines()
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            rows.append((parts[0], parts[1], parts[2]))
+    return rows
+
+
+def search_exact(rows, terms, product_filter=""):
+    pn = norm(product_filter)
+    hits = []
+    for row in rows:
+        name = row[0]
+        blob = row[-1]
+        page = row[1] if len(row) >= 3 else ""
+        if pn and pn not in norm(name):
+            continue
+        for t in terms:
+            idx = blob.find(t)
+            if idx >= 0:
+                hits.append((name, page, blob, t, idx))
+                break
+    return hits
+
+
+def search_fuzzy(rows, terms, product_filter="", top=15):
+    """RapidFuzz partial ratio over normalized rows (recall layer).
+
+    Lazy-imports rapidfuzz so the exact-hit fast path never pays the
+    ~37ms import cost.
+    """
+    try:
+        from rapidfuzz import fuzz
+    except Exception:
+        return []
+    pn = norm(product_filter)
+    scored = []
+    for row in rows:
+        name = row[0]
+        blob = row[-1]
+        page = row[1] if len(row) >= 3 else ""
+        if pn and pn not in norm(name):
+            continue
+        if not blob:
+            continue
+        best = 0.0
+        best_t = ""
+        for t in terms:
+            if len(t) < 2:
+                continue
+            r = fuzz.partial_ratio(blob[:2000], t)
+            if r > best:
+                best = r
+                best_t = t
+        if best >= 62:
+            scored.append((best, name, page, blob, best_t))
+    scored.sort(key=lambda x: -x[0])
+    return scored[:top]
+
+
+def search_bm25(rows, terms, product_filter="", top=12):
+    """BM25 ranking over the same rows (relevance layer).
+
+    Lazy-imports rank_bm25 so the exact-hit fast path never pays the
+    ~110ms import cost.
+    """
+    try:
+        from rank_bm25 import BM25Okapi
+    except Exception:
+        return []
+    pn = norm(product_filter)
+    corpus = []
+    meta = []
+    for row in rows:
+        name = row[0]
+        blob = row[-1]
+        page = row[1] if len(row) >= 3 else ""
+        if pn and pn not in norm(name):
+            continue
+        corpus.append(tokenize(blob))
+        meta.append((name, page, blob))
+    if not corpus:
+        return []
+    try:
+        bm = BM25Okapi(corpus)
+        q = []
+        for t in terms:
+            q.extend(tokenize(t))
+        if not q:
+            return []
+        scores = bm.get_scores(q)
+        ranked = sorted(range(len(scores)), key=lambda i: -scores[i])
+        out = []
+        for i in ranked[:top]:
+            if scores[i] > 0:
+                out.append((scores[i], meta[i][0], meta[i][1], meta[i][2]))
+        return out
+    except Exception:
+        return []
+
+
+def diagnose(product: str, q: str):
+    """NOT_FOUND diagnostics: which layer lost the content."""
+    lines = []
+    lines.append(f"DIAGNOSE product={product!r} q={q!r}")
+    pn = norm(product)
+
+    ocr_files = []
+    for p in sorted(OCR_DIR.glob("*.txt")):
+        if pn and pn not in norm(p.stem):
+            continue
+        text = p.read_text(encoding="utf-8", errors="replace")
+        npg = len(re.findall(r"===== PAGE (\d+) =====", text))
+        ocr_files.append((p.name, npg, len(norm(text))))
+    if ocr_files:
+        lines.append(f"OCR_FILES ({len(ocr_files)}):")
+        for name, npg, nlen in ocr_files[:10]:
+            lines.append(f"  {name}: pages={npg} norm_len={nlen}")
+    else:
+        lines.append("OCR_FILES: none matched product")
+
+    pdf_hits = []
+    for p in SOURCE_ROOT.rglob("*.pdf"):
+        if pn and pn not in norm(p.stem):
+            continue
+        pdf_hits.append(p)
+    if pdf_hits:
+        lines.append(f"PDF_FILES ({len(pdf_hits)}):")
+        try:
+            import pdfplumber
+            for p in pdf_hits[:5]:
+                with pdfplumber.open(str(p)) as pdf:
+                    tl = sum(1 for pg in pdf.pages[:4] if (pg.extract_text() or "").strip())
+                lines.append(f"  {p.name}: text_layer_pages={tl}/{len(pdf.pages)}")
+        except Exception as e:
+            lines.append(f"  pdfplumber error: {e}")
+    else:
+        lines.append("PDF_FILES: none matched product")
+
+    if PAGES_DIR.exists():
+        imgs = []
+        for p in PAGES_DIR.rglob("*"):
+            if p.is_file() and p.suffix.lower() in (".jpg", ".png"):
+                if pn and pn not in norm(p.stem):
+                    continue
+                imgs.append(str(p.relative_to(PAGES_DIR)))
+        if imgs:
+            lines.append(f"PAGE_IMAGES ({len(imgs)}):")
+            for rel in imgs[:8]:
+                lines.append(f"  {rel}")
+
+    lines.append("NEXT_STEP: 若 OCR 为空且页面图存在，建议对上述 PAGE_IMAGES 做定向识图（用户确认后执行）。")
+    return "\n".join(lines)
+
+
+def snippet(blob, idx, term, width=240):
+    start = max(0, idx - 80)
+    return blob[start : idx + len(term) + width]
+
+
+def main():
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--product", default="")
+    parser.add_argument("--q", required=True)
+    parser.add_argument("--diagnose", action="store_true")
+    args = parser.parse_args()
+
+    terms = query_terms(args.q)
+    lookup = load_faq_lookup()
+    if args.product and lookup:
+        fast_hits = lookup_faq_fast(lookup, args.product, args.q, terms)
+        if fast_hits:
+            print(f"HITS_LOOKUP count={len(fast_hits)}")
+            for item in fast_hits:
+                print("---")
+                print("question:", (item.get("question") or "")[:300])
+                print("answer:", item.get("answer") or "")
+                print("template:", item.get("template") or "")
+            if args.diagnose:
+                print("\n" + diagnose(args.product, args.q))
+            return 0
+
+    faq_rows = load_rows("faq")
+    faq_full = load_faq_full()
+    kdocs_rows = load_rows("kdocs")
+    spec_rows = load_rows("spec")
+    ocr_pages = load_ocr_pages()
+
+    results = []
+
+    # FAQ (exact path)
+    for name, page, blob, t, idx in search_exact(faq_rows, terms, args.product):
+        full_items = find_faq_full(faq_full, name, blob, terms)
+        if full_items:
+            for item in full_items[:3]:
+                results.append((1000.0, "FAQ", name, page, json.dumps(item, ensure_ascii=False), t))
+        else:
+            results.append((1000.0, "FAQ", name, page, snippet(blob, idx, t), t))
+
+    # KDOCS
+    for name, page, blob, t, idx in search_exact(kdocs_rows, terms, args.product):
+        results.append((900.0, "KDOCS", name, page, snippet(blob, idx, t), t))
+
+    # SPEC
+    for name, page, blob, t, idx in search_exact(spec_rows, terms, args.product):
+        results.append((950.0, "SPEC", name, page, snippet(blob, idx, t), t))
+
+    # OCR pages
+    for name, page, blob, t, idx in search_exact(ocr_pages, terms, args.product):
+        results.append((980.0, "OCR", name, page, snippet(blob, idx, t), t))
+
+    # Exact hits exist -> return immediately (fast path, no fuzzy/bm25).
+    if results:
+        results.sort(key=lambda x: -x[0])
+        seen = set()
+        uniq = []
+        for r in results:
+            key = (r[1], r[2], r[3])
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(r)
+        print(f"HITS ranked={len(uniq)} terms={','.join(terms)}")
+        for score, layer, name, page, snip, term in uniq[:5]:
+            loc = f" page={page}" if page else ""
+            print("---")
+            print(f"[{score:.1f}] {layer} | {name}{loc} | term={term or '-'}")
+            if layer == "FAQ":
+                try:
+                    item = json.loads(snip)
+                    print("  question:", item.get("question", "")[:300])
+                    print("  answer:", item.get("answer", ""))
+                    print("  template:", item.get("template", ""))
+                    continue
+                except Exception:
+                    pass
+            print(f"  {snip[:1500]}")
+        if args.diagnose:
+            print("\n" + diagnose(args.product, args.q))
+        return 0
+
+    # No exact hit -> fall back to fuzzy + BM25 for recall.
+    for score, name, page, blob, t in search_fuzzy(faq_rows, terms, args.product):
+        results.append((score, "FAQ", name, page, blob[:300], t))
+    for score, name, page, blob in search_bm25(faq_rows, terms, args.product):
+        results.append((score, "FAQ", name, page, blob[:300], ""))
+    for score, name, page, blob, t in search_fuzzy(kdocs_rows, terms, args.product):
+        results.append((score, "KDOCS", name, page, blob[:300], t))
+    for score, name, page, blob in search_bm25(kdocs_rows, terms, args.product):
+        results.append((score, "KDOCS", name, page, blob[:300], ""))
+    for score, name, page, blob, t in search_fuzzy(spec_rows, terms, args.product):
+        results.append((score, "SPEC", name, page, blob[:300], t))
+    for score, name, page, blob in search_bm25(spec_rows, terms, args.product):
+        results.append((score, "SPEC", name, page, blob[:300], ""))
+    for score, name, page, blob, t in search_fuzzy(ocr_pages, terms, args.product):
+        results.append((score * 0.95, "OCR", name, page, blob[:300], t))
+    for score, name, page, blob in search_bm25(ocr_pages, terms, args.product):
+        results.append((score, "OCR", name, page, blob[:300], ""))
+
+    seen = set()
+    uniq = []
+    for r in sorted(results, key=lambda x: -x[0]):
+        key = (r[1], r[2], r[3])
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(r)
+
+    if not uniq:
+        print("NOT_FOUND")
+        if args.diagnose:
+            print(diagnose(args.product, args.q))
+        return 1
+
+    print(f"HITS ranked={len(uniq)} terms={','.join(terms)}")
+    for score, layer, name, page, snip, term in uniq[:15]:
+        loc = f" page={page}" if page else ""
+        print("---")
+        print(f"[{score:.1f}] {layer} | {name}{loc} | term={term or '-'}")
+        print(f"  {snip[:400]}")
+    if args.diagnose:
+        print("\n" + diagnose(args.product, args.q))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

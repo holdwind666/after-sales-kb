@@ -5,6 +5,13 @@ Usage:
   python miss_tracker.py record --product "06 switch手柄" --question "充電できない" --reason "no template hit"
   python miss_tracker.py acknowledge
   python miss_tracker.py reset
+
+Reminder policy:
+  - When the record count reaches the threshold (default 3), reminder_due is set.
+  - reminder_due stays True on every subsequent record until the user
+    actually completes the incremental update and runs acknowledge (or
+    update-done). This means every later miss keeps prompting for an
+    incremental update, instead of silently re-accumulating.
 """
 import argparse
 import json
@@ -43,11 +50,12 @@ def print_status(data, settings):
         print(f"  - [{r['timestamp']}] {r.get('product','')} | {r.get('question','')} | {r.get('reason','')}")
     if data["reminder_due"]:
         print("ACTION: remind user to consider incremental update")
+        print("NOTE: if the user has NOT performed the incremental update, every subsequent miss will keep reminding until acknowledge.")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["status", "record", "acknowledge", "reset"])
+    parser.add_argument("action", choices=["status", "record", "acknowledge", "update-done", "reset"])
     parser.add_argument("--product", default="")
     parser.add_argument("--question", default="")
     parser.add_argument("--reason", default="")
@@ -66,13 +74,13 @@ def main():
         print("reset done")
         return
 
-    if args.action == "acknowledge":
+    if args.action in ("acknowledge", "update-done"):
         data["reminder_due"] = False
         data["last_reminder"] = datetime.now().isoformat(timespec="seconds")
         data["cycles"] = data.get("cycles", 0) + 1
         data["records"] = []
         save_counter(data)
-        print("acknowledged, counter reset")
+        print("acknowledged (incremental update completed), counter reset")
         return
 
     if args.action == "record":
