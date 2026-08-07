@@ -91,7 +91,7 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
    - 生成产品映射、FAQ、facts 索引（`build_products.py` / `build_faq_index.py` / `build_facts.py`）；
    - 生成快速查询预索引（`build_quick_index.py`，含规格书 xlsx 参数层）→ **预编译 FAQ 查表（`build_faq_lookup.py`，产品+问题关键词 → 完整日文模板，1-2 秒）** → 生成知识缺口报告（`build_gap_report.py`）并让用户确认可接受的剩余缺口；
    - **视觉语义索引默认不建立**（识图消耗 API 额度，且 OCR 已覆盖绝大多数文字查询）。只有用户**明确说“全量识图/建立视觉索引”**时才运行；运行前必须提示耗时与额度消耗，且不主动发起。
-6. **环境自检**：运行 `scripts/check_environment.ps1`，按输出逐一解决缺失项（路径未提供、Chrome 未打开/未登录、缓存未构建、Python/OCR 依赖缺失等），把用户当电脑小白，给出可点击/可复制的操作步骤。
+6. **环境自检**：运行 `scripts/check_environment.ps1`，按输出逐一解决缺失项（路径未提供、Chrome 未打开/未登录、缓存未构建、Python/OCR 依赖缺失、启动封装缺失等），把用户当电脑小白，给出可点击/可复制的操作步骤。
 
 ## 日常问答流程
 
@@ -104,24 +104,24 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
   - `售后原则`：退货/退款/质保/延保/换新等售后处理规则；
   - `刷单原则`：刷单相关性、数量登记、记表步骤、上评等；
   - `各注意事项`：早晚班工作习惯、必做事项、LINE 回复、刷单汇报模板等。
-  - 检索方式与产品类一致：`quick_query.py --q "<关键词>"`（不指定 --product 即为全库扫描，会命中 kdocs 层这三个表），或直接读 `kdocs/<表名>.txt` 原文。
+- 检索方式与产品类一致：`quick_query.ps1 -Q "<关键词>"`（不指定 -Product 即为全库扫描，会命中 kdocs 层这三个表），或直接读 `kdocs/<表名>.txt` 原文。
   - 命中后按“内部规则 → 可发给顾客/执行的回复”组织输出；这三个表主要是内部操作规则，涉及顾客回复时按表内政策生成。
 
 ### 速度红线（强制）
 
-- **日常文字问答默认只运行一次 `quick_query.py` 快查**（目标 <200ms），命中即答。
+- **日常文字问答默认只运行一次 `quick_query.ps1` 快查**（目标 <200ms），命中即答。
 - 命中后**直接生成回复**，禁止再运行任何验证命令（不检查索引文件、不列出目录、不比对 TSV、不跑多余脚本）。
 - 只有在快查返回 NOT_FOUND 时才进入兜底检索；此时才允许继续读取。
 - 图片/识图相关才查 manual_image_index / xlsx_image_index / vision_index；用户没有要求图片时不碰这些索引。
 - 回答里一句话说明命中来源即可，不需要展示验证过程。
 - **默认不派子代理**：单条问答用 quick_query 单命令快查（<200ms）。只有快查返回 NOT_FOUND 且问题跨多产品/多文档时，才并行派 2 个子代理兜底（FAQ/kdocs 一组 + OCR/说明书一组），合并结果后回复。
 
-1. **快速索引路径（默认）**：运行 `python _售后模板缓存/scripts/quick_query.py --product "<产品>" --q "<问题>"`（单次调用，目标 <200ms）。脚本**只读预构建的规范化索引** `quick_index/`（由 `build_quick_index.py` 在缓存构建时生成）：
+1. **快速索引路径（默认）**：运行 `powershell -ExecutionPolicy Bypass -File "_售后模板缓存\scripts\quick_query.ps1" -Product "<产品>" -Q "<问题>"`（单次调用，目标 <200ms）。**必须使用 `quick_query.ps1` 启动封装**，它固定调用 Codex 自带 Python，避免本机 PATH 中 WindowsApps 占位 `python.exe` 静默失败（无输出、退出码 1）导致查询卡住。脚本**只读预构建的规范化索引** `quick_index/`（由 `build_quick_index.py` 在缓存构建时生成）：
    - 索引内容：FAQ（问题+方法+模板）、**按页粒度的全部 pdf_ocr**、全部 kdocs、**规格书 xlsx（说明书目录下“规格书”文件夹，含参数事实如线长/功率/配件）**，均已在构建时完成去空格+小写规范化；
    - OCR 索引按页记录（`ocr_pages.tsv`），命中可定位到具体页码；文件名带目录上下文（如 `杨永鑫\内置充气泵充气床\エアーベッド…`），中文产品名也能命中日文文件名说明书；
    - **混合检索**：先查预编译 FAQ 查表（`faq_lookup.json`，产品+问题关键词直查完整模板）→ 同义词扩展（`synonyms.tsv`，数据驱动）→ 精确子串匹配 → rapidfuzz 模糊匹配 → BM25 排序，一次聚合 FAQ + OCR + kdocs + SPEC 四源并排序；
    - 中文词与日文词通过同义词表互查（如“包装内容”→“セット内容/同梱物/内容品/付属品”、“配件”→“付属品/同梱”等）；
-   - **未命中诊断**：`--diagnose` 输出各层检查结果（OCR 页数/长度、PDF 文本层、页面图路径），快速定位内容丢在哪一层；
+   - **未命中诊断**：`quick_query.ps1 -Q "<问题>" -Diagnose` 输出各层检查结果（OCR 页数/长度、PDF 文本层、页面图路径），快速定位内容丢在哪一层；
    - 命中即直接生成回复；未命中显示 NOT_FOUND 后，才手动读 facts 或按需进入图片/识图路径。
    - **文字类问题先走本地缓存流程**（products → faq → facts → kdocs/pdf_ocr/manual_image_index 检索），本地命中即秒答；本地未命中时才到在线表格定位搜索，不启动 300MB xlsx。
    - **图片相关问题时**：先查本地索引（manual_image_index / xlsx_image_index / vision_index），优先**直接告知图片位置**（工作表+单元格，或说明书文件名+页码），默认不下载图片。
@@ -165,8 +165,10 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
 ## 资源
 
 ### scripts/
-- `check_environment.ps1`：环境自检（路径、缓存、Chrome 会话、Python 依赖）。
-- `quick_query.py`：**日常问答默认入口**（产品+问题 → FAQ/OCR/kdocs 单命令快查，目标 <200ms，含去空格与同义词扩展）。
+- `py.ps1`：**统一 Python 启动封装**，固定使用 Codex 自带 Python（`C:\Users\ASUS\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`），找不到时回退 `py.exe`；所有 Python 脚本都通过它调用，不再直接敲 `python`。
+- `quick_query.ps1`：**日常问答默认入口**（产品+问题 → FAQ/OCR/kdocs 单命令快查，目标 <200ms，含去空格与同义词扩展），内部自动调用 `py.ps1 quick_query.py`。
+- `check_environment.ps1`：环境自检（路径、缓存、Chrome 会话、Python 依赖、启动封装）。
+- `build_install_zip.ps1`：重建 `售后知识库Skill安装包\after-sales-kb.zip`（技能更新后运行，新电脑安装到的才是最新版）。
 - `miss_tracker.py`：跨对话未命中计数器（status/record/acknowledge/update-done/reset）。
 - `build_gap_report.py`：**知识缺口报告**（空 OCR / 无 FAQ / 无 OCR / 未命中记录），输出 gaps/gap_report.tsv 与 gap_report.md，供维护人确定更新优先级。
 - 缓存构建脚本：`capture_kdocs_sheets.ps1`（在线表格文本）、`ocr_worker.ps1`（PDF OCR）、`build_pdf_pages.ps1`（页面图）、`build_manual_images.py`（OCR段落↔页面图关联）、`build_xlsx_image_index.py`（本地 xlsx 的 DISPIMG 图片索引）、`build_vision_index.py`（视觉语义索引，识图能力优先，兜底 vision-skill，默认不运行）、`clean_vision_failed.py`（清理中断/失败的全量识图残留）、`build_faq_lookup.py`（预编译 FAQ 查表）、`build_faq_index.py` / `build_products.py` / `build_facts.py`（索引）。

@@ -60,6 +60,17 @@ if (Test-Path $py) {
     Write-Output "    - Python: 未找到，请使用 Codex 自带运行环境"
 }
 
+# 启动封装检查
+Write-Output "    - 启动封装（必须存在，禁止直接敲 python）:"
+$launcher = Join-Path $PSScriptRoot "py.ps1"
+$qq = Join-Path $PSScriptRoot "quick_query.ps1"
+Write-Output "    - py.ps1: $(Test-Path -LiteralPath $launcher)"
+Write-Output "    - quick_query.ps1: $(Test-Path -LiteralPath $qq)"
+if (Test-Path -LiteralPath $launcher) {
+    $testOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $launcher -c "print('PY_LAUNCH_OK')" 2>$null
+    Write-Output "    - py.ps1 实测: $(if ($testOut -match 'PY_LAUNCH_OK') { '可用' } else { '异常，请检查' })"
+}
+
 # Poppler
 $poppler = "C:\Users\ASUS\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\poppler\Library\bin\pdftoppm.exe"
 Write-Output "    - Poppler(pdftoppm): $(Test-Path $poppler)"

@@ -47,6 +47,20 @@
 1. 确认 `_售后模板缓存` 下已有 `products.tsv`、`faq/`、`facts/` 索引（快速路径）。
 2. 避免每次全量扫描 kdocs/ 和 pdf_ocr/；先走快速索引路径。
 3. 若索引缺失，按 cache-build.md 重建。
+4. 确认调用的是 `quick_query.ps1` 封装，而不是直接敲 `python`：
+   - 本机 PATH 中的 `python.exe` 可能是 WindowsApps 占位程序，调用后**无任何输出、退出码 1**，会让查询看起来卡住；
+   - 统一用 `powershell -ExecutionPolicy Bypass -File "_售后模板缓存\scripts\quick_query.ps1" -Product "<产品>" -Q "<问题>"`；
+   - 封装内部固定使用 Codex 自带 Python（`C:\Users\ASUS\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`），不存在时才回退 `py.exe`。
+
+## 5a. quick_query 调用后无输出 / 退出码 1
+
+症状：运行 `python quick_query.py ...` 后没有任何输出，或第一轮查询正常、偶尔没反应。
+
+解决：
+1. 不要再用裸 `python` 调用任何技能脚本；
+2. 改用 `quick_query.ps1`（或通用 `py.ps1`）入口；
+3. 运行 `check_environment.ps1` 确认 Codex 自带 Python 存在；
+4. 若封装本身报错，把报错原文贴给 Codex。
 
 ## 6. 未命中计数不生效
 
@@ -54,7 +68,7 @@
 
 解决：
 1. 检查 `_售后模板缓存/miss_counter.json` 是否存在。
-2. 用 `python scripts/miss_tracker.py status` 查看计数。
+2. 用 `powershell -ExecutionPolicy Bypass -File "_售后模板缓存\scripts\py.ps1" "_售后模板缓存\scripts\miss_tracker.py" status` 查看计数。
 3. 确认每次未命中都执行了 `record` 操作。
 
 注：满 3 次未命中后，如果用户没有执行增量更新，之后的每一次未命中都会继续提醒；只有用户实际完成增量更新并运行 `miss_tracker.py update-done` 后才会重置。
@@ -64,11 +78,11 @@
 症状：日常问答回复生成时间明显变长，或明明库里有的内容却显示未命中。
 
 解决：
-1. 日常文字问答默认只运行 `quick_query.py --product <产品> --q <问题>` 一次（目标 <200ms），命中即答，禁止再做额外验证命令；
+1. 日常文字问答默认只运行 `quick_query.ps1 -Product <产品> -Q <问题>` 一次（目标 <200ms），命中即答，禁止再做额外验证命令；
 2. OCR 检索前必须先去除文本空格再匹配（如 `付 属 品` → `付属品`）；
 3. 未命中时按“主动告知 + 可选深入”流程处理，等用户选择后才继续，不要自动深挖；
-4. 未命中时可用 `quick_query.py --diagnose` 查看分层诊断（OCR 页数/长度、PDF 文本层、页面图路径），判断内容丢在哪一层；
-5. 确认 `rank-bm25` / `rapidfuzz` 已安装（混合检索依赖），缺失时 `python -m pip install rank-bm25 rapidfuzz`；
+4. 未命中时可用 `quick_query.ps1 -Q "<问题>" -Diagnose` 查看分层诊断（OCR 页数/长度、PDF 文本层、页面图路径），判断内容丢在哪一层；
+5. 确认 `rank-bm25` / `rapidfuzz` 已安装（混合检索依赖），缺失时 `powershell -ExecutionPolicy Bypass -File "_售后模板缓存\scripts\py.ps1" -m pip install rank-bm25 rapidfuzz`；
 6. 若问题跨多产品/多文档且快查 NOT_FOUND，才考虑并行派 2 个子代理兜底（FAQ/kdocs + OCR/说明书）。
 
 ## 6b. 非产品类问题查不到
@@ -77,7 +91,7 @@
 
 解决：
 1. 确认已按问题分类走非产品类路径：直接查 `kdocs/售后原则.txt` / `kdocs/刷单原则.txt` / `kdocs/各注意事项.txt`；
-2. 用 `quick_query.py --q "<关键词>"`（不指定 --product）全库扫描，命中这三个表的 kdocs 层；
+2. 用 `quick_query.ps1 -Q "<关键词>"`（不指定 -Product）全库扫描，命中这三个表的 kdocs 层；
 3. 仍无结果时，可能是这三个表未抓取或缓存过期，按 cache-build.md 重新抓取在线表格全部工作表。
 
 ## 7. 自动更新未配置
@@ -94,7 +108,7 @@
 症状：需要分析说明书页图/WPS 内嵌图，但会话无法直接查看图片（例如读图工具返回不支持）。
 
 解决：
-1. 优先尝试会话识图能力；确认不具备时走 vision-skill；
+1. 优先尝试会话识图能力；确认不具备时走 vision-skill（注意：本会话图片预览偶发失败时不要反复重试，直接改用 OCR 文本核对，必要时按需识图）；
 2. 检查 `C:\Users\ASUS\.codex\skills\vision-skill\scripts\vision.js` 是否存在；
 3. 已安装：直接运行 `build_vision_index.py` 或 `vision.js` 接入第三方识图 API；
 4. 未安装：明确提示“本会话不具备识图能力，需要安装 vision-skill 技能接入第三方识图 API 后继续”。
@@ -112,7 +126,7 @@
 ## 10. 其他环境缺失
 
 技能依赖以下工具，缺失时按提示安装：
-- Python（含 pdfplumber、PIL）：Codex 自带运行时可优先使用。
+- Python（含 pdfplumber、PIL）：统一通过 `scripts/py.ps1` 使用 Codex 自带运行时，禁止直接敲 `python`。
 - Poppler（pdftoppm / pdfinfo）：用于 PDF 渲染与页面图。
 - Chrome 浏览器：用于打开 WPS 在线表格。
 - playwright-cli：用于持久化浏览器会话。
