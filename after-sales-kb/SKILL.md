@@ -86,10 +86,10 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
    - 案例 B：本地说明书查询（如“理发器 使いかた”→ 命中 pdf_ocr + pdf_pages 页面图）。
 5. **引导建立缓存（新电脑全量索引构建）**：在用户提供的根目录下创建 `_售后模板缓存`，按顺序运行 scripts/ 中的构建脚本（详见 references/cache-build.md）。完整扫描只需首次做一次，之后增量更新：
    - 抓取在线表格全部工作表文本（`capture_kdocs_sheets.ps1`）→ 下载整张 WPS 在线表为本地 xlsx（约 300MB，页面“普通下载”通道）→ 建立 DISPIMG 图片索引（`build_xlsx_image_index.py`）；
-   - OCR 全部说明书 PDF（`ocr_worker.ps1`，建议 4 分片并行）→ **构建后运行缺口检测，对规范化长度 <200 的文件批量强制重跑（`-ForceOcr`），直至确认失败项均为“内容本身极少/重复文件/不售后”**；
+   - OCR 全部说明书 PDF（`ocr_worker.ps1`，建议 4 分片并行）：脚本先尝试提取 PDF 内嵌文字层（通过临时 JSON 传递，避免编码损坏），文字层过短/缺失的页面自动以 300 DPI 渲染后逐页 OCR，页码标记按 1..N 顺序写入；**构建后运行缺口检测，对规范化长度 <200 的文件批量强制重跑（`-ForceOcr`），直至确认失败项均为“内容本身极少/重复文件/不售后”**；旧版缓存（页标记为 1,3,5…）可先运行 `migrate_ocr_page_markers.py` 修正页码再重建索引；
    - 渲染每页 PDF 为图片（`build_pdf_pages.ps1`）→ 建立视频/图片索引 → 建立说明书图文关联索引（`build_manual_images.py`）；
    - 生成产品映射、FAQ、facts 索引（`build_products.py` / `build_faq_index.py` / `build_facts.py`）；
-   - 生成快速查询预索引（`build_quick_index.py`，含规格书 xlsx 参数层）→ **预编译 FAQ 查表（`build_faq_lookup.py`，产品+问题关键词 → 完整日文模板，1-2 秒）** → 生成知识缺口报告（`build_gap_report.py`）并让用户确认可接受的剩余缺口；
+   - 生成快速查询预索引（`build_quick_index.py`，含规格书 xlsx+PDF 文字层、OCR 按页索引、参数层 `params_norm.tsv`）→ **预编译 FAQ 查表（`build_faq_lookup.py`，产品+问题关键词 → 完整日文模板，1-2 秒）** → 生成轻量知识图谱（`build_kb_graph.py`，产品↔FAQ/说明书/规格书/页面图/视频 的关系网，用于校验收录与兜底定位）→ 生成知识缺口报告（`build_gap_report.py`）并让用户确认可接受的剩余缺口；
    - **视觉语义索引默认不建立**（识图消耗 API 额度，且 OCR 已覆盖绝大多数文字查询）。只有用户**明确说“全量识图/建立视觉索引”**时才运行；运行前必须提示耗时与额度消耗，且不主动发起。
 6. **环境自检**：运行 `scripts/check_environment.ps1`，按输出逐一解决缺失项（路径未提供、Chrome 未打开/未登录、缓存未构建、Python/OCR 依赖缺失、启动封装缺失等），把用户当电脑小白，给出可点击/可复制的操作步骤。
 
@@ -117,11 +117,12 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
 - **默认不派子代理**：单条问答用 quick_query 单命令快查（<200ms）。只有快查返回 NOT_FOUND 且问题跨多产品/多文档时，才并行派 2 个子代理兜底（FAQ/kdocs 一组 + OCR/说明书一组），合并结果后回复。
 
 1. **快速索引路径（默认）**：运行 `powershell -ExecutionPolicy Bypass -File "_售后模板缓存\scripts\quick_query.ps1" -Product "<产品>" -Q "<问题>"`（单次调用，目标 <200ms）。**必须使用 `quick_query.ps1` 启动封装**，它固定调用 Codex 自带 Python，避免本机 PATH 中 WindowsApps 占位 `python.exe` 静默失败（无输出、退出码 1）导致查询卡住。脚本**只读预构建的规范化索引** `quick_index/`（由 `build_quick_index.py` 在缓存构建时生成）：
-   - 索引内容：FAQ（问题+方法+模板）、**按页粒度的全部 pdf_ocr**、全部 kdocs、**规格书 xlsx（说明书目录下“规格书”文件夹，含参数事实如线长/功率/配件）**，均已在构建时完成去空格+小写规范化；
+   - 索引内容：FAQ（问题+方法+模板）、**按页粒度的全部 pdf_ocr**、全部 kdocs、**规格书 xlsx + 规格书 PDF 内嵌文字层（说明书目录下“规格书”文件夹，含参数事实如线长/功率/配件）**、**参数层 params_norm.tsv（仅保留线长/尺寸/功率/电压/容量/配件等参数行）**，均已在构建时完成去空格+小写规范化；
    - OCR 索引按页记录（`ocr_pages.tsv`），命中可定位到具体页码；文件名带目录上下文（如 `杨永鑫\内置充气泵充气床\エアーベッド…`），中文产品名也能命中日文文件名说明书；
-   - **混合检索**：先查预编译 FAQ 查表（`faq_lookup.json`，产品+问题关键词直查完整模板）→ 同义词扩展（`synonyms.tsv`，数据驱动）→ 精确子串匹配 → rapidfuzz 模糊匹配 → BM25 排序，一次聚合 FAQ + OCR + kdocs + SPEC 四源并排序；
+   - **混合检索**：先查预编译 FAQ 查表（`faq_lookup.json`，产品+问题关键词直查完整模板）→ 同义词扩展（`synonyms.tsv`，数据驱动，支持**短语级扩展**，例如查询含“电源线”时自动补“電源コード/電源側コード/電源コード長/電源側コード長/本体側コード長”）→ 精确子串匹配 → rapidfuzz 模糊匹配 → BM25 排序，一次聚合 FAQ + OCR + kdocs + SPEC + PARAMS 五源并排序（命中词越长越优先）；
    - 中文词与日文词通过同义词表互查（如“包装内容”→“セット内容/同梱物/内容品/付属品”、“配件”→“付属品/同梱”等）；
-   - **未命中诊断**：`quick_query.ps1 -Q "<问题>" -Diagnose` 输出各层检查结果（OCR 页数/长度、PDF 文本层、页面图路径），快速定位内容丢在哪一层；
+   - **未命中诊断**：`quick_query.ps1 -Q "<问题>" -Diagnose` 输出各层检查结果（OCR 页数/长度、PDF 文本层、页面图路径），并额外输出 `CANDIDATE_IMAGES`（与查询词相关的具体页面图路径），供定向识图直接使用；
+   - 知识图谱 `kb_graph/`（nodes.tsv / edges.tsv / summary.json）用于快速回答“某产品有哪些资料/视频/页面图”和校验收录完整性；
    - 命中即直接生成回复；未命中显示 NOT_FOUND 后，才手动读 facts 或按需进入图片/识图路径。
    - **文字类问题先走本地缓存流程**（products → faq → facts → kdocs/pdf_ocr/manual_image_index 检索），本地命中即秒答；本地未命中时才到在线表格定位搜索，不启动 300MB xlsx。
    - **图片相关问题时**：先查本地索引（manual_image_index / xlsx_image_index / vision_index），优先**直接告知图片位置**（工作表+单元格，或说明书文件名+页码），默认不下载图片。
@@ -136,7 +137,7 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
    1. 直接告知：知识库暂无现成模板（一句话说明查了哪些本地索引）；
    2. 给出一段可发给顾客的礼貌回复模板（如“已向工厂确认，稍后回复”）；
    3. 提供可选的深入方式，并注明预计耗时，让用户决定是否继续：
-      - 选项 A：定向识图（圈定具体文件/页面，预计 X 分钟）；
+      - 选项 A：定向识图（优先使用 `-Diagnose` 输出的 CANDIDATE_IMAGES 圈定文件/页面，预计 X 分钟）；
       - 选项 B：联网搜索通用知识（预计 X 分钟，结果仅参考并标注来源）；
    4. **用户下一条消息明确选择后才继续**；用户未选择/未回复 → 本轮到此结束，不再深入；
    5. 严禁主动启用识图或联网搜索。
@@ -171,7 +172,9 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
 - `build_install_zip.ps1`：重建 `售后知识库Skill安装包\after-sales-kb.zip`（技能更新后运行，新电脑安装到的才是最新版）。
 - `miss_tracker.py`：跨对话未命中计数器（status/record/acknowledge/update-done/reset）。
 - `build_gap_report.py`：**知识缺口报告**（空 OCR / 无 FAQ / 无 OCR / 未命中记录），输出 gaps/gap_report.tsv 与 gap_report.md，供维护人确定更新优先级。
-- 缓存构建脚本：`capture_kdocs_sheets.ps1`（在线表格文本）、`ocr_worker.ps1`（PDF OCR）、`build_pdf_pages.ps1`（页面图）、`build_manual_images.py`（OCR段落↔页面图关联）、`build_xlsx_image_index.py`（本地 xlsx 的 DISPIMG 图片索引）、`build_vision_index.py`（视觉语义索引，识图能力优先，兜底 vision-skill，默认不运行）、`clean_vision_failed.py`（清理中断/失败的全量识图残留）、`build_faq_lookup.py`（预编译 FAQ 查表）、`build_faq_index.py` / `build_products.py` / `build_facts.py`（索引）。
+- `build_kb_graph.py`：**轻量知识图谱**（产品↔FAQ/说明书/规格书/页面图/视频 的关系网），输出 kb_graph/，用于校验收录完整性和兜底定位。
+- `migrate_ocr_page_markers.py`：旧版 OCR 页码迁移（1,3,5… → 1..N），存量缓存升级时运行一次。
+- 缓存构建脚本：`capture_kdocs_sheets.ps1`（在线表格文本）、`ocr_worker.ps1`（PDF OCR）、`build_pdf_pages.ps1`（页面图）、`build_manual_images.py`（OCR段落↔页面图关联）、`repair_ocr_vision.py`（坏页视觉修复：自动判定空页/规格表缺数值页，识图逐字读取并合并回 OCR 索引，提示词内置无需手动输入）、`build_xlsx_image_index.py`（本地 xlsx 的 DISPIMG 图片索引）、`build_vision_index.py`（视觉语义索引，识图能力优先，兜底 vision-skill，默认不运行）、`clean_vision_failed.py`（清理中断/失败的全量识图残留）、`build_faq_lookup.py`（预编译 FAQ 查表）、`build_faq_index.py` / `build_products.py` / `build_facts.py`（索引）。
 
 ### references/
 - `examples.md`：两个完整使用案例（在线表格模板查询、本地说明书查询）。

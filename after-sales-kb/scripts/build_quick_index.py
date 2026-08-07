@@ -32,6 +32,7 @@ SOURCE_ROOT = BASE.parent
 FAQ_DIR = BASE / "faq"
 OCR_DIR = BASE / "pdf_ocr"
 KDOCS_DIR = BASE / "kdocs"
+REPAIR_OVERLAY = BASE / "ocr_repair" / "overlay.tsv"
 OUT_DIR = BASE / "quick_index"
 
 PAGE_SPLIT_RE = re.compile(r"===== PAGE (\d+) =====")
@@ -75,6 +76,20 @@ DEFAULT_SYNONYMS = {
     "不能开机": ["无法启动", "启动异常", "起動しない", "電源が入らない"],
     "不开机": ["无法启动", "启动异常", "起動しない", "電源が入らない"],
     "不出雾": ["噴霧しない", "雾化"],
+    # 参数类：线长/电源线/尺寸/功率/电压/容量/重量（支持查询时按短语扩展）
+    "线长": ["線長", "コード長", "ケーブル長", "電源コード長", "電源側コード長", "本体側コード長"],
+    "线长度": ["線長", "コード長", "ケーブル長", "電源コード長", "電源側コード長", "本体側コード長"],
+    "电线多长": ["線長", "コード長", "ケーブル長", "電源コード長", "電源側コード長", "本体側コード長"],
+    "电源线": ["電源コード", "電源側コード", "コード"],
+    "电源线长度": ["電源コード長", "電源側コード長", "本体側コード長", "電源側", "本体側"],
+    "充电线": ["充電ケーブル", "充電コード", "USBケーブル"],
+    "尺寸": ["寸法", "サイズ", "外形寸法"],
+    "功率": ["消費電力", "定格出力", "定格消費電力"],
+    "消费电力": ["消費電力", "定格消費電力"],
+    "消費電力": ["消费电力", "功率"],
+    "电压": ["定格電圧", "電圧", "入力電圧"],
+    "容量": ["容量", "タンク容量"],
+    "重量": ["重量", "質量"],
 }
 
 
@@ -130,13 +145,13 @@ def split_ocr_pages(text: str):
 
 
 def iter_spec_files():
-    """Yield spec-like xlsx files under source 说明书 dir (read-only)."""
+    """Yield spec-like xlsx/pdf files under source 说明书 dir (read-only)."""
     spec_dirs = ("规格书", "规格", "spec", "Spec")
     for d in SOURCE_ROOT.glob("说明书/*"):
         if not d.is_dir():
             continue
         for sub in d.rglob("*"):
-            if not sub.is_file() or sub.suffix.lower() != ".xlsx":
+            if not sub.is_file() or sub.suffix.lower() not in (".xlsx", ".pdf"):
                 continue
             if any(k in sub.parent.name for k in spec_dirs):
                 yield sub
@@ -161,10 +176,133 @@ def extract_xlsx_text(path: Path) -> str:
     return "\n".join(parts)
 
 
+def extract_pdf_text(path: Path) -> str:
+    """Extract embedded text layer from a spec PDF (empty when scanned)."""
+    try:
+        import pdfplumber
+    except Exception:
+        return ""
+    parts = []
+    try:
+        with pdfplumber.open(str(path)) as pdf:
+            for p in pdf.pages:
+                t = (p.extract_text() or "").strip()
+                if t:
+                    parts.append(t)
+    except Exception:
+        return ""
+    return "\n".join(parts)
+
+
+PARAM_HINT_RE = re.compile(
+    r"(長|長さ|コード|線|線長|寸法|サイズ|定格|消費電力|容量|重量|質量|出力|電圧|"
+    r"线长|电源线|电线|尺寸|功率|电压|容量|重量|配件|付属品|セット内容|電源側|本体側|充電ケーブル)"
+)
+
+# Human-verified parameter facts. WinRT OCR is unreliable on small technical
+# table cells (it read 18m instead of 1.8M on one spec sheet), so verified
+# values live in a seed table that is merged into the PARAMS layer. The
+# source PDF/page makes the fact traceable. Users can extend
+# quick_index/param_seeds.tsv (same columns, tab-separated) and rebuild.
+DEFAULT_PARAM_SEEDS = [
+    {
+        "product": "电热毯（肖玲）",
+        "model": "MZM-5526",
+        "attribute": "電源コード長",
+        "value": "電源側 1.8m / 本体側 0.6m",
+        "source": "说明书\\肖玲\\电热毯\\规格书\\单人产品规格书-MZM-5526-星盟版.pdf",
+        "page": "4",
+    },
+    {
+        "product": "电热毯（肖玲）",
+        "model": "MZM-8026",
+        "attribute": "電源コード長",
+        "value": "電源側 1.8m / 本体側 1.2m",
+        "source": "说明书\\肖玲\\电热毯\\规格书\\双人产品规格书-MZM-8026-星盟版.pdf",
+        "page": "4",
+    },
+]
+
+PARAM_SEED_COLUMNS = ["product", "model", "attribute", "value", "source", "page"]
+
+
+def extract_param_rows(text: str, max_rows: int = 400):
+    """Keep only lines that look like parameter facts (length/code/size/...)."""
+    out = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if PARAM_HINT_RE.search(line):
+            nl = norm(line)
+            if nl and nl not in out:
+                out.append(nl)
+        if len(out) >= max_rows:
+            break
+    return out
+
+
+def write_param_seeds_file():
+    """Write the default seed table once (user-extendable afterwards)."""
+    p = OUT_DIR / "param_seeds.tsv"
+    if p.exists():
+        return
+    with p.open("w", encoding="utf-8", newline="") as f:
+        f.write("\t".join(PARAM_SEED_COLUMNS) + "\n")
+        for s in DEFAULT_PARAM_SEEDS:
+            f.write(
+                "\t".join(str(s.get(c, "")) for c in PARAM_SEED_COLUMNS) + "\n"
+            )
+
+
+def load_param_seeds() -> list[dict]:
+    write_param_seeds_file()
+    p = OUT_DIR / "param_seeds.tsv"
+    rows = []
+    if not p.exists():
+        return rows
+    lines = p.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        return rows
+    header = lines[0].split("\t")
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) < len(header):
+            continue
+        row = dict(zip(header, parts))
+        if row.get("value", "").strip():
+            rows.append(row)
+    return rows
+
+
+def load_repair_overlay() -> dict[tuple[str, str], str]:
+    """Load vision-repaired page text (ocr_repair/overlay.tsv).
+
+    Keys are (pdf_base, page_seq). build_quick_index merges these pages
+    over the WinRT OCR text so weak spec-table values become searchable.
+    """
+    overlay = {}
+    if not REPAIR_OVERLAY.exists():
+        return overlay
+    for line in REPAIR_OVERLAY.read_text(encoding="utf-8", errors="replace").splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        base, seq, text = parts[0], parts[1], parts[2]
+        if not base or not seq:
+            continue
+        try:
+            text = json.loads(text)
+        except Exception:
+            pass
+        overlay[(base, seq)] = text
+    return overlay
+
+
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    counts = {"faq": 0, "ocr_pages": 0, "kdocs": 0, "spec": 0}
+    counts = {"faq": 0, "ocr_pages": 0, "kdocs": 0, "spec": 0, "params": 0, "seeds": 0}
     ocr_path_map = load_ocr_path_map()
+    repair_overlay = load_repair_overlay()
 
     # FAQ index
     with (OUT_DIR / "faq_norm.tsv").open("w", encoding="utf-8", newline="") as f:
@@ -212,6 +350,9 @@ def main():
                 name = ocr_path_map.get(p.stem, p.name)
                 src_f.write(f"{name}\t{len(pages)}\t{len(norm(text))}\n")
                 for seq, body in pages:
+                    repaired = repair_overlay.get((p.stem, str(seq)))
+                    if repaired is not None:
+                        body = repaired + "\n" + body
                     f.write(f"{name}\t{seq}\t{norm(body)}\n")
                     counts["ocr_pages"] += 1
 
@@ -227,15 +368,59 @@ def main():
             f.write(f"{p.name}\t{norm(text)}\n")
             counts["kdocs"] += 1
 
-    # spec files
+    # spec files (xlsx text + pdf embedded text layer)
     with (OUT_DIR / "spec_norm.tsv").open("w", encoding="utf-8", newline="") as f:
         for p in sorted(iter_spec_files(), key=lambda x: str(x)):
-            text = extract_xlsx_text(p)
+            if p.suffix.lower() == ".xlsx":
+                text = extract_xlsx_text(p)
+            else:
+                text = extract_pdf_text(p)
             if not text.strip():
                 continue
             rel = str(p.relative_to(SOURCE_ROOT))
             f.write(f"{rel}\t{norm(text)}\n")
             counts["spec"] += 1
+
+    # parameter fact layer: OCR pages + spec texts, only lines with param hints
+    with (OUT_DIR / "params_norm.tsv").open("w", encoding="utf-8", newline="") as f:
+        f.write("file\tpage\tparam_text\n")
+        for p in sorted(OCR_DIR.glob("*.txt")):
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                text = ""
+            name = ocr_path_map.get(p.stem, p.name)
+            for seq, body in split_ocr_pages(text):
+                repaired = repair_overlay.get((p.stem, str(seq)))
+                if repaired is not None:
+                    body = repaired + "\n" + body
+                rows = extract_param_rows(body)
+                if rows:
+                    f.write(f"{name}\t{seq}\t{' '.join(rows)}\n")
+                    counts["params"] += 1
+        for p in sorted(iter_spec_files(), key=lambda x: str(x)):
+            if p.suffix.lower() == ".xlsx":
+                text = extract_xlsx_text(p)
+            else:
+                text = extract_pdf_text(p)
+            if not text.strip():
+                continue
+            rows = extract_param_rows(text)
+            if rows:
+                rel = str(p.relative_to(SOURCE_ROOT))
+                f.write(f"{rel}\t\t{' '.join(rows)}\n")
+                counts["params"] += 1
+        for seed in load_param_seeds():
+            fact = " ".join(
+                [seed.get("model", ""), seed.get("attribute", ""), seed.get("value", "")]
+            ).strip()
+            if not fact:
+                continue
+            f.write(
+                f"param_seeds:{seed.get('product', '')}\t{seed.get('page', '')}\t{norm(fact)}\n"
+            )
+            counts["params"] += 1
+            counts["seeds"] += 1
 
     # synonym dictionary
     with (OUT_DIR / "synonyms.tsv").open("w", encoding="utf-8", newline="") as f:

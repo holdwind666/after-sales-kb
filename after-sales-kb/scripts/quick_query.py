@@ -53,9 +53,26 @@ def query_terms(q: str):
     qn = norm(q)
     terms = [qn]
     syn = load_synonyms()
-    for ja in syn.get(q, []):
-        terms.append(norm(ja))
-    # also reverse: if the query itself is a ja term, no zh mapping needed
+    # Phrase-level expansion: every synonym key that appears inside the query
+    # contributes its zh/ja expansions. E.g. "电源线 长度" expands to
+    # 電源コード長 / 電源側コード長 / 本体側コード長 even when the full
+    # query string has no exact synonym entry.
+    for zh, ja_list in syn.items():
+        nzh = norm(zh)
+        if nzh and nzh in qn:
+            for ja in ja_list:
+                nja = norm(ja)
+                if nja:
+                    terms.append(nja)
+    # reverse mapping: a Japanese term inside the query also maps back
+    for zh, ja_list in syn.items():
+        nzh = norm(zh)
+        if not nzh or nzh in terms:
+            continue
+        for ja in ja_list:
+            if norm(ja) in qn:
+                terms.append(nzh)
+                break
     return list(dict.fromkeys(t for t in terms if t))
 
 
@@ -164,6 +181,20 @@ def load_ocr_pages():
     return rows
 
 
+def load_params_rows():
+    """Load parameter fact rows: (file, page, text) from params_norm.tsv."""
+    p = OUT_DIR / "params_norm.tsv"
+    rows = []
+    if not p.exists():
+        return rows
+    lines = p.read_text(encoding="utf-8").splitlines()
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            rows.append((parts[0], parts[1], "\t".join(parts[2:])))
+    return rows
+
+
 def search_exact(rows, terms, product_filter=""):
     pn = norm(product_filter)
     hits = []
@@ -173,11 +204,18 @@ def search_exact(rows, terms, product_filter=""):
         page = row[1] if len(row) >= 3 else ""
         if pn and pn not in norm(name):
             continue
+        # Pick the LONGEST matching term: a page containing 電源コード長 is a
+        # much stronger hit than one containing only the generic コード, so
+        # specificity should decide which term is reported and how it ranks.
+        best = None  # (len, idx, term)
         for t in terms:
+            if not t:
+                continue
             idx = blob.find(t)
-            if idx >= 0:
-                hits.append((name, page, blob, t, idx))
-                break
+            if idx >= 0 and (best is None or len(t) > best[0]):
+                best = (len(t), idx, t)
+        if best:
+            hits.append((name, page, blob, best[2], best[1]))
     return hits
 
 
@@ -262,6 +300,7 @@ def diagnose(product: str, q: str):
     lines = []
     lines.append(f"DIAGNOSE product={product!r} q={q!r}")
     pn = norm(product)
+    terms = query_terms(q)
 
     ocr_files = []
     for p in sorted(OCR_DIR.glob("*.txt")):
@@ -307,7 +346,29 @@ def diagnose(product: str, q: str):
             for rel in imgs[:8]:
                 lines.append(f"  {rel}")
 
-    lines.append("NEXT_STEP: 若 OCR 为空且页面图存在，建议对上述 PAGE_IMAGES 做定向识图（用户确认后执行）。")
+    # Targeted vision candidates: page images whose OCR segment matched terms
+    index_tsv = BASE / "manual_image_index" / "pages.tsv"
+    if index_tsv.exists():
+        cand = []
+        for line in index_tsv.read_text(encoding="utf-8").splitlines()[1:]:
+            parts = line.split("\t")
+            if len(parts) < 6:
+                continue
+            pdf_base, page_seq, marker, _, preview, image_rel = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+            if not image_rel:
+                continue
+            if pn and pn not in norm(pdf_base):
+                continue
+            nprev = norm(preview)
+            if not any(t in nprev for t in terms if len(t) >= 2):
+                continue
+            cand.append((pdf_base, page_seq, image_rel))
+        if cand:
+            lines.append(f"CANDIDATE_IMAGES ({len(cand)}):")
+            for pdf_base, page_seq, image_rel in cand[:10]:
+                lines.append(f"  {pdf_base} page={page_seq} -> pdf_pages/{image_rel}")
+
+    lines.append("NEXT_STEP: 若 OCR 为空且存在 CANDIDATE_IMAGES，建议对列出的页面图做定向识图（用户确认后执行）。")
     return "\n".join(lines)
 
 
@@ -344,6 +405,7 @@ def main():
     kdocs_rows = load_rows("kdocs")
     spec_rows = load_rows("spec")
     ocr_pages = load_ocr_pages()
+    params_rows = load_params_rows()
 
     results = []
 
@@ -368,9 +430,13 @@ def main():
     for name, page, blob, t, idx in search_exact(ocr_pages, terms, args.product):
         results.append((980.0, "OCR", name, page, snippet(blob, idx, t), t))
 
+    # PARAMS (parameter fact layer)
+    for name, page, blob, t, idx in search_exact(params_rows, terms, args.product):
+        results.append((975.0, "PARAMS", name, page, snippet(blob, idx, t), t))
+
     # Exact hits exist -> return immediately (fast path, no fuzzy/bm25).
     if results:
-        results.sort(key=lambda x: -x[0])
+        results.sort(key=lambda x: (-(len(x[5]) if x[5] else 0), -x[0]))
         seen = set()
         uniq = []
         for r in results:
@@ -415,10 +481,14 @@ def main():
         results.append((score * 0.95, "OCR", name, page, blob[:300], t))
     for score, name, page, blob in search_bm25(ocr_pages, terms, args.product):
         results.append((score, "OCR", name, page, blob[:300], ""))
+    for score, name, page, blob, t in search_fuzzy(params_rows, terms, args.product):
+        results.append((score * 0.95, "PARAMS", name, page, blob[:300], t))
+    for score, name, page, blob in search_bm25(params_rows, terms, args.product):
+        results.append((score, "PARAMS", name, page, blob[:300], ""))
 
     seen = set()
     uniq = []
-    for r in sorted(results, key=lambda x: -x[0]):
+    for r in sorted(results, key=lambda x: (-(len(x[5]) if x[5] else 0), -x[0])):
         key = (r[1], r[2], r[3])
         if key in seen:
             continue

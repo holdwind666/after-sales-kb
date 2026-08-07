@@ -52,100 +52,97 @@ function Ocr-Pdf($PdfPath, $OutTextPath) {
     $tempDir = Join-Path $OutDir ("_tmp_" + [System.IO.Path]::GetFileNameWithoutExtension($PdfPath) + "_" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     try {
-        # Try text layer first (skip if ForceOcr)
-        $textParts = @()
+        # Try text layer first (skip if ForceOcr). Exchange data through a
+        # temp UTF-8 JSON file: NUL-delimited markers on native stdout get
+        # mangled by PowerShell 5.1 encoding and corrupt the extracted text.
+        $textLayer = @()
         if (-not $ForceOcr) {
             $env:PYTHONUTF8 = "1"
+            $jsonPath = Join-Path $tempDir "textlayer.json"
             $pyScript = @'
-import os, sys
+import sys, json
 try:
     import pdfplumber
     path = sys.argv[1]
+    out = sys.argv[2]
     with pdfplumber.open(path) as pdf:
         pages = []
         for p in pdf.pages:
-            t = p.extract_text() or ""
-            pages.append(t)
-    print("\x00PAGES\x00" + str(len(pages)))
-    print("\x00TEXT\x00" + "\x00PAGEBREAK\x00".join(pages))
+            pages.append(p.extract_text() or "")
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(pages, f, ensure_ascii=False)
+    print("TEXTLAYER_OK")
 except Exception as e:
-    print("\x00ERROR\x00" + str(e))
+    print("TEXTLAYER_ERR: " + str(e))
 '@
             $pyFile = Join-Path $tempDir "extract.py"
             [System.IO.File]::WriteAllText($pyFile, $pyScript, $utf8)
-            $pyOut = & $py $pyFile $PdfPath 2>$null | Out-String
-            if ($pyOut -match "\x00PAGES\x00(\d+)") {
-                $pageCount = [int]$Matches[1]
-                if ($pyOut -match "\x00TEXT\x00(.*)") {
-                    $allText = $Matches[1]
-                    $segments = $allText -split "\x00PAGEBREAK\x00"
-                    $nonEmpty = @($segments | Where-Object { $_.Trim().Length -gt 0 }).Count
-                    if ($nonEmpty -ge $pageCount) {
-                        # Full text layer available
-                        [System.IO.File]::WriteAllText($OutTextPath, $allText, $utf8)
-                        return @{ Status = "text-layer"; Pages = $pageCount }
-                    }
-                    if ($nonEmpty -gt 0) {
-                        # Partial text layer: keep it and OCR only remaining pages (simplify: append OCR of all pages)
-                        $textParts += $segments
-                    }
+            & $py $pyFile $PdfPath $jsonPath 2>$null | Out-Null
+            if ((Test-Path -LiteralPath $jsonPath) -and ((Get-Item -LiteralPath $jsonPath).Length -gt 0)) {
+                try {
+                    $textLayer = [System.IO.File]::ReadAllText($jsonPath, $utf8) | ConvertFrom-Json
+                    if (-not $textLayer) { $textLayer = @() }
+                } catch {
+                    $textLayer = @()
                 }
             }
         }
-        if (-not $pageCount) { $pageCount = 1 }
-        # Render pages
+        # Render pages at 300 DPI so small table cells (e.g. spec sheets)
+        # survive OCR; whole pages are scaled down only when oversized.
         Write-Output "DBG render: $pdf"
-        & $poppler -png -r 200 $PdfPath (Join-Path $tempDir "page") 2>$null | Out-Null
+        & $poppler -png -r 300 $PdfPath (Join-Path $tempDir "page") 2>$null | Out-Null
         $pngs = @(Get-ChildItem -LiteralPath $tempDir -Filter "page-*.png" | Sort-Object Name)
         Write-Output "DBG pngs: $($pngs.Count)"
         if ($pngs.Count -eq 0) {
-            return @{ Status = "render-fail"; Pages = $pageCount }
+            return @{ Status = "render-fail"; Pages = 0 }
         }
-        $ocrPages = @()
-        foreach ($png in $pngs) {
-            $imgPath = $png.FullName
-            $env:PYTHONUTF8 = "1"
-            $tileScript = @'
-import sys, os
+        $pageCount = $pngs.Count
+        $finalLines = @()
+        $textPages = 0
+        $ocrPageCount = 0
+        for ($i = 0; $i -lt $pngs.Count; $i++) {
+            $pageNo = $i + 1
+            $finalLines += ("===== PAGE " + $pageNo + " =====")
+            $tl = ""
+            if ($i -lt $textLayer.Count) { $tl = [string]$textLayer[$i] }
+            # A page whose embedded text layer is only a few characters is
+            # usually a scanned artwork with stray text artifacts (e.g. a
+            # spec table page containing just "1.8M / 1.2M"); OCR it too so
+            # labels like 電源側コード長 are not lost.
+            if ($tl.Trim().Length -ge 20) {
+                $finalLines += $tl
+                $textPages++
+            } else {
+                $imgPath = $pngs[$i].FullName
+                $env:PYTHONUTF8 = "1"
+                $scaleScript = @'
+import sys
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None
 src = sys.argv[1]
-outdir = sys.argv[2]
-listfile = sys.argv[3]
+out = sys.argv[2]
 img = Image.open(src).convert("RGB")
 w, h = img.size
-cols, rows = 3, 2
-paths = []
-for r in range(rows):
-    for c in range(cols):
-        x0 = w*c//cols; x1 = w*(c+1)//cols
-        y0 = h*r//rows; y1 = h*(r+1)//rows
-        t = img.crop((x0,y0,x1,y1))
-        tp = os.path.join(outdir, f"tile_{r}{c}.png")
-        t.save(tp)
-        paths.append(tp)
-with open(listfile, "w", encoding="utf-8") as f:
-    f.write("\n".join(paths))
+scale = 6000.0 / max(w, h)
+if scale < 1.0:
+    img = img.resize((int(w * scale), int(h * scale)))
+img.save(out)
 '@
-            $tileFile = Join-Path $tempDir "tile.py"
-            [System.IO.File]::WriteAllText($tileFile, $tileScript, $utf8)
-            $tilesFile = Join-Path $tempDir "tiles.txt"
-            & $py $tileFile $imgPath $tempDir $tilesFile 2>$null | Out-Null
-            $tilePaths = @()
-            if (Test-Path -LiteralPath $tilesFile) {
-                $tilePaths = @([System.IO.File]::ReadAllLines($tilesFile, $utf8) | Where-Object { $_.Trim().Length -gt 0 })
-            }
-            $pageText = @()
-            foreach ($tp in $tilePaths) {
-                if (Test-Path -LiteralPath $tp) {
-                    $pageText += (Ocr-Png $tp)
+                $scaleFile = Join-Path $tempDir "scale.py"
+                [System.IO.File]::WriteAllText($scaleFile, $scaleScript, $utf8)
+                $ocrImg = Join-Path $tempDir ("page_ocr_" + $pageNo + ".png")
+                & $py $scaleFile $imgPath $ocrImg 2>$null | Out-Null
+                if (Test-Path -LiteralPath $ocrImg) {
+                    $finalLines += (Ocr-Png $ocrImg)
+                    $ocrPageCount++
                 }
             }
-            $ocrPages += ("===== PAGE " + ($ocrPages.Count + 1) + " =====")
-            $ocrPages += ($pageText -join "`n")
         }
-        $finalText = if ($textParts.Count -gt 0) { ($textParts -join "`n") + "`n" + ($ocrPages -join "`n") } else { $ocrPages -join "`n" }
-        [System.IO.File]::WriteAllText($OutTextPath, $finalText, $utf8)
-        return @{ Status = "ocr"; Pages = $pageCount; Pngs = $pngs.Count }
+        [System.IO.File]::WriteAllText($OutTextPath, ($finalLines -join "`n"), $utf8)
+        if ($ocrPageCount -eq 0) {
+            return @{ Status = "text-layer"; Pages = $pageCount; TextPages = $textPages }
+        }
+        return @{ Status = "ocr"; Pages = $pageCount; OcrPages = $ocrPageCount; TextPages = $textPages }
     }
     finally {
         if (Test-Path -LiteralPath $tempDir) {
@@ -176,7 +173,7 @@ foreach ($pdf in $list) {
     try {
         $r = Ocr-Pdf $pdf $outText
         $sw.Stop()
-        $line = "OK`t$($r.Status)`tpages=$($r.Pages)`tsec=$([Math]::Round($sw.Elapsed.TotalSeconds,1))`t$pdf"
+        $line = "OK`t$($r.Status)`tpages=$($r.Pages)`tocr=$($r.OcrPages)`ttext=$($r.TextPages)`tsec=$([Math]::Round($sw.Elapsed.TotalSeconds,1))`t$pdf"
         [System.IO.File]::AppendAllText($LogFile, $line + "`r`n", $utf8)
         Write-Output $line
         $ok++

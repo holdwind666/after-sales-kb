@@ -39,6 +39,22 @@
 2. 若文本层是 CID 乱码，用 `-ForceOcr` 参数强制渲染识别。
 3. 若渲染像素超限，降低渲染 DPI（120）并缩放后识别。
 
+## 4a. OCR 文本打开/显示是乱码（文件其实没坏）
+
+症状：用 PowerShell 直接 `Get-Content xxx.txt` 或某些编辑器打开，中文/日文变成 `鐢电儹姣?`、`銈点偆銈?` 之类。
+
+原因：OCR 缓存文件是 **UTF-8 无 BOM**；Windows PowerShell 5.1 的 `Get-Content` 默认按简体中文 ANSI（GBK）解码 UTF-8 字节，所以显示成乱码。这**不是缓存损坏，不需要重跑 OCR**。
+
+解决：
+1. PowerShell 里读取必须显式指定 UTF-8：
+   ```powershell
+   Get-Content -LiteralPath "<文件>" -Encoding UTF8
+   # 或
+   [System.IO.File]::ReadAllText("<文件>", [System.Text.Encoding]::UTF8)
+   ```
+2. Codex 检索脚本内部一律使用 UTF-8（`read_text(encoding="utf-8")`），结果正常。
+3. 如果某个文件用 UTF-8 读出来仍是 `�` 替换字符，才说明该文件确实损坏，可对源 PDF 用 `-ForceOcr` 重跑。
+
 ## 5. 查询很慢
 
 症状：每次回答要 10 秒以上。
