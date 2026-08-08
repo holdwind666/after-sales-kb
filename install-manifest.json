@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "suite": "after-sales-support-suite",
+  "version": "2.0.0",
+  "channel": "stable",
+  "skills": [
+    "skills/after-sales-reply",
+    "skills/after-sales-kb-maintain",
+    "skills/after-sales-learning-review"
+  ],
+  "install_script": "installer/install.ps1",
+  "update_script": "installer/update.ps1",
+  "checksums_file": "checksums.sha256",
+  "config_path": "%LOCALAPPDATA%/AfterSalesSupport/config/settings.json",
+  "data_policy": "Repository files contain no customer data, credentials, WPS exports, local cache, or approved internal cases."
+}

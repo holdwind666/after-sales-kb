@@ -1,0 +1,26 @@
+{
+  "name": "after-sales-support-suite",
+  "version": "2.0.0",
+  "description": "Amazon Japan after-sales reply, knowledge-base maintenance, and confirmed-learning workflows.",
+  "author": {
+    "name": "holdwind666",
+    "url": "https://github.com/holdwind666"
+  },
+  "homepage": "https://github.com/holdwind666/after-sales-kb",
+  "repository": "https://github.com/holdwind666/after-sales-kb",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "日本站售后客服助手",
+    "shortDescription": "本地知识库快速回复、维护与确认后学习",
+    "longDescription": "使用本地说明书、WPS 售后规则和已批准案例生成日本站售后回复，并提供跨电脑初始化、缓存维护和客服确认后学习流程。",
+    "developerName": "holdwind666",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/holdwind666/after-sales-kb",
+    "defaultPrompt": [
+      "根据这段顾客原文生成可直接发送的日文回复。",
+      "初始化本机售后知识库并检查快速索引。",
+      "审核待确认的售后学习案例。"
+    ]
+  }
+}

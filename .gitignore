@@ -1,3 +1,12 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
-
+*.zip
+*.exe
+.env
+settings.json
+chatgpt_learning.json
+_售后模板缓存/
+cache/
+logs/
+learning/
+*.jsonl

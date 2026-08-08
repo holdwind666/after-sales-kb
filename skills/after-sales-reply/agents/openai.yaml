@@ -1,0 +1,4 @@
+interface:
+  display_name: "售后回复助手"
+  short_description: "结合本地说明书、WPS规则和已批准案例生成日本站售后回复"
+  default_prompt: "Use $after-sales-reply to answer this customer message with a ready-to-send Japanese reply."

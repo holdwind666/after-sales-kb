@@ -1,0 +1,4 @@
+interface:
+  display_name: "售后知识库维护"
+  short_description: "安装初始化并维护多台电脑的本地售后知识库与快速索引"
+  default_prompt: "Use $after-sales-kb-maintain to install or initialize the after-sales knowledge base on this computer."

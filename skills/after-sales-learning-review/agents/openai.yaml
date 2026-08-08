@@ -1,0 +1,4 @@
+interface:
+  display_name: "售后学习审核"
+  short_description: "审核客服对话中的可复用经验，确认后写入共享售后学习库"
+  default_prompt: "Use $after-sales-learning-review to review and approve pending after-sales learning candidates."
