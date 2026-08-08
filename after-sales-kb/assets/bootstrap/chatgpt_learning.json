@@ -1,0 +1,14 @@
+{
+  "cloud_root": "",
+  "raw_dir": "",
+  "corpus_dir": "",
+  "feedback_dir": "",
+  "session": "chatgpt",
+  "max_conversations": 1000,
+  "auto_update": {
+    "enabled": false,
+    "frequency": "daily",
+    "time": "08:00",
+    "last_run": ""
+  }
+}

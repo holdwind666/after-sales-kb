@@ -21,15 +21,17 @@ page images for on-demand vision).
 import argparse
 import io
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
-BASE = Path(r"E:\说明书与视频（第9台）\_售后模板缓存")
+BASE = Path(os.environ.get("AFTERSALES_CACHE_DIR") or r"E:\说明书与视频（第9台）\_售后模板缓存")
 OUT_DIR = BASE / "quick_index"
 OCR_DIR = BASE / "pdf_ocr"
 PAGES_DIR = BASE / "pdf_pages"
 SOURCE_ROOT = BASE.parent
+CHATGPT_CFG = BASE / "chatgpt_learning.json"
 
 
 def norm(s: str) -> str:
@@ -195,6 +197,28 @@ def load_params_rows():
     return rows
 
 
+def load_chatgpt_rows():
+    """Load ChatGPT-history rows from the WPS-synced corpus (if configured)."""
+    if not CHATGPT_CFG.exists():
+        return []
+    try:
+        cfg = json.loads(CHATGPT_CFG.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    corpus_dir = cfg.get("corpus_dir") or ""
+    if not corpus_dir:
+        return []
+    p = Path(corpus_dir) / "chatgpt_norm.tsv"
+    rows = []
+    if not p.exists():
+        return rows
+    for line in p.read_text(encoding="utf-8").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 4:
+            rows.append((parts[0], parts[1], parts[2], "\t".join(parts[3:])))
+    return rows
+
+
 def search_exact(rows, terms, product_filter=""):
     pn = norm(product_filter)
     hits = []
@@ -252,6 +276,68 @@ def search_fuzzy(rows, terms, product_filter="", top=15):
             scored.append((best, name, page, blob, best_t))
     scored.sort(key=lambda x: -x[0])
     return scored[:top]
+
+
+def search_chatgpt_fuzzy(rows, terms, product_filter="", top=15):
+    """Fuzzy search over ChatGPT-history rows (id, title, project, text)."""
+    try:
+        from rapidfuzz import fuzz
+    except Exception:
+        return []
+    pn = norm(product_filter)
+    scored = []
+    for conv_id, title, project, text in rows:
+        if pn and pn not in norm(title) and pn not in norm(text):
+            continue
+        if not text:
+            continue
+        best = 0.0
+        best_t = ""
+        for t in terms:
+            if len(t) < 2:
+                continue
+            r = fuzz.partial_ratio(text[:2000], t)
+            if r > best:
+                best = r
+                best_t = t
+        if best >= 62:
+            scored.append((best, conv_id, title, text[:300], best_t))
+    scored.sort(key=lambda x: -x[0])
+    return scored[:top]
+
+
+def search_chatgpt_bm25(rows, terms, product_filter="", top=12):
+    """BM25 over ChatGPT-history rows (id, title, project, text)."""
+    try:
+        from rank_bm25 import BM25Okapi
+    except Exception:
+        return []
+    pn = norm(product_filter)
+    corpus = []
+    meta = []
+    for conv_id, title, project, text in rows:
+        if pn and pn not in norm(title) and pn not in norm(text):
+            continue
+        corpus.append(tokenize(text))
+        meta.append((conv_id, title, text))
+    if not corpus:
+        return []
+    try:
+        bm = BM25Okapi(corpus)
+        q = []
+        for t in terms:
+            q.extend(tokenize(t))
+        if not q:
+            return []
+        scores = bm.get_scores(q)
+        ranked = sorted(range(len(scores)), key=lambda i: -scores[i])
+        out = []
+        for i in ranked[:top]:
+            if scores[i] > 0:
+                out.append((scores[i], meta[i][0], meta[i][1], meta[i][2][:300]))
+        return out
+    except Exception:
+        return []
 
 
 def search_bm25(rows, terms, product_filter="", top=12):
@@ -406,6 +492,7 @@ def main():
     spec_rows = load_rows("spec")
     ocr_pages = load_ocr_pages()
     params_rows = load_params_rows()
+    chatgpt_rows = load_chatgpt_rows()
 
     results = []
 
@@ -433,6 +520,23 @@ def main():
     # PARAMS (parameter fact layer)
     for name, page, blob, t, idx in search_exact(params_rows, terms, args.product):
         results.append((975.0, "PARAMS", name, page, snippet(blob, idx, t), t))
+
+    # CHATGPT history layer: historical successful handling records.
+    for row in chatgpt_rows:
+        conv_id, title, project, text = row
+        pn = norm(args.product)
+        if pn and pn not in norm(title) and pn not in norm(text):
+            continue
+        best = None
+        for t in terms:
+            if not t:
+                continue
+            idx = text.find(t)
+            if idx >= 0 and (best is None or len(t) > best[0]):
+                best = (len(t), idx, t)
+        if best:
+            idx = best[1]
+            results.append((920.0, "CHATGPT", title, project, snippet(text, idx, best[2]), best[2]))
 
     # Exact hits exist -> return immediately (fast path, no fuzzy/bm25).
     if results:
@@ -485,6 +589,10 @@ def main():
         results.append((score * 0.95, "PARAMS", name, page, blob[:300], t))
     for score, name, page, blob in search_bm25(params_rows, terms, args.product):
         results.append((score, "PARAMS", name, page, blob[:300], ""))
+    for score, name, page, blob, t in search_chatgpt_fuzzy(chatgpt_rows, terms, args.product):
+        results.append((score * 0.90, "CHATGPT", name, page, blob, t))
+    for score, name, page, blob in search_chatgpt_bm25(chatgpt_rows, terms, args.product):
+        results.append((score, "CHATGPT", name, page, blob, ""))
 
     seen = set()
     uniq = []

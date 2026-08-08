@@ -1,6 +1,6 @@
 ---
 name: after-sales-kb
-description: 日本站售后知识库。使用本地说明书/演示视频文件夹与 WPS 在线表格（日本站售后对应方案表）回答售后问题、按模板生成日文回复、查询产品参数与配件。当用户提供售后顾客原文（日文/中文）并要求结合产品型号回复、询问产品使用方法/部品/充电/连接/灯光等问题、首次在新电脑上初始化售后知识库、或缓存未命中需要增量更新/联网兜底时使用。
+description: 日本站售后知识库。使用本地说明书/演示视频文件夹、WPS 在线表格（日本站售后对应方案表）与 ChatGPT 历史对话学习库回答售后问题、按模板生成日文回复、查询产品参数与配件。当用户提供售后顾客原文（日文/中文）并要求结合产品型号回复、询问产品使用方法/部品/充电/连接/灯光等问题、首次在新电脑上初始化售后知识库、缓存未命中需要增量更新/联网兜底、或要求学习/抓取/分析 ChatGPT 历史售后对话并让回复越来越贴近本人风格时使用。
 ---
 
 # 日本站售后知识库（after-sales-kb）
@@ -84,14 +84,68 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
 4. **演示两个使用案例**（见 references/examples.md）：
    - 案例 A：在线表格模板查询（如“06手柄 充電できない”→ 命中 kdocs 模板并生成日文回复）；
    - 案例 B：本地说明书查询（如“理发器 使いかた”→ 命中 pdf_ocr + pdf_pages 页面图）。
-5. **引导建立缓存（新电脑全量索引构建）**：在用户提供的根目录下创建 `_售后模板缓存`，按顺序运行 scripts/ 中的构建脚本（详见 references/cache-build.md）。完整扫描只需首次做一次，之后增量更新：
+5. **引导建立缓存（新电脑全量索引构建）**：在用户提供的根目录下创建 `_售后模板缓存`，按顺序运行 scripts/ 中的构建脚本（详见 references/cache-build.md）。完整扫描只需首次做一次，之后增量更新。**整个初始化过程全部由 Codex 代替用户执行命令**，用户只需要提供路径、打开表格并保持登录；遇到任何需要用户操作的地方，先给出一句话说明“为什么需要这一步”，再给出可点击/可复制的步骤：
    - 抓取在线表格全部工作表文本（`capture_kdocs_sheets.ps1`）→ 下载整张 WPS 在线表为本地 xlsx（约 300MB，页面“普通下载”通道）→ 建立 DISPIMG 图片索引（`build_xlsx_image_index.py`）；
    - OCR 全部说明书 PDF（`ocr_worker.ps1`，建议 4 分片并行）：脚本先尝试提取 PDF 内嵌文字层（通过临时 JSON 传递，避免编码损坏），文字层过短/缺失的页面自动以 300 DPI 渲染后逐页 OCR，页码标记按 1..N 顺序写入；**构建后运行缺口检测，对规范化长度 <200 的文件批量强制重跑（`-ForceOcr`），直至确认失败项均为“内容本身极少/重复文件/不售后”**；旧版缓存（页标记为 1,3,5…）可先运行 `migrate_ocr_page_markers.py` 修正页码再重建索引；
    - 渲染每页 PDF 为图片（`build_pdf_pages.ps1`）→ 建立视频/图片索引 → 建立说明书图文关联索引（`build_manual_images.py`）；
    - 生成产品映射、FAQ、facts 索引（`build_products.py` / `build_faq_index.py` / `build_facts.py`）；
    - 生成快速查询预索引（`build_quick_index.py`，含规格书 xlsx+PDF 文字层、OCR 按页索引、参数层 `params_norm.tsv`）→ **预编译 FAQ 查表（`build_faq_lookup.py`，产品+问题关键词 → 完整日文模板，1-2 秒）** → 生成轻量知识图谱（`build_kb_graph.py`，产品↔FAQ/说明书/规格书/页面图/视频 的关系网，用于校验收录与兜底定位）→ 生成知识缺口报告（`build_gap_report.py`）并让用户确认可接受的剩余缺口；
-   - **视觉语义索引默认不建立**（识图消耗 API 额度，且 OCR 已覆盖绝大多数文字查询）。只有用户**明确说“全量识图/建立视觉索引”**时才运行；运行前必须提示耗时与额度消耗，且不主动发起。
-6. **环境自检**：运行 `scripts/check_environment.ps1`，按输出逐一解决缺失项（路径未提供、Chrome 未打开/未登录、缓存未构建、Python/OCR 依赖缺失、启动封装缺失等），把用户当电脑小白，给出可点击/可复制的操作步骤。
+    - **视觉语义索引默认不建立**（识图消耗 API 额度，且 OCR 已覆盖绝大多数文字查询）。只有用户**明确说“全量识图/建立视觉索引”**时才运行；运行前必须提示耗时与额度消耗，且不主动发起。
+    - **ChatGPT 历史对话学习库**（可选但推荐）：直接运行 `run_chatgpt_learning.ps1` 一条命令完成——自动发现本机 WPS 云盘并生成本地配置、打开 ChatGPT 窗口、未登录时等待用户登录后自动抓取并学习历史售后对话（详见 references/chatgpt-learning.md）。
+6. **主动说明知识库成长方式（新电脑必说一次，用以下完整话术）**：完成缓存引导后，**必须主动告知用户**：
+   “接下来说明这个知识库怎么越用越强，分两件事：
+   第一，**日常自动学习**：以后每次在这里处理售后问答，系统会自动把这次处理（问题、思路、最终日文回复）存进知识库，不需要你做任何操作，回答得越多它越准。
+   第二，**可选的历史对话导入**：如果你在 ChatGPT 网页端有过往的亚马逊工作对话（售后、运营、listing 等），可以一次性补进知识库，大约 5–15 分钟，能多出上百条可参考模板。想现在补就说‘导入 ChatGPT 对话’，我会一步步带你操作；不想现在补也没关系，日常自动学习已经生效，以后任何时候说一声即可。”
+   - 用户同意现在导入 → 按下方“ChatGPT 历史对话学习引导”执行，并让用户选择方案 A 或方案 B；
+   - 用户暂不需要 → 回复“好的，日常自动学习已生效；以后想补历史对话，随时说‘导入 ChatGPT 对话’即可”，不要反复追问。
+   - **强调顺序**：日常自动学习是默认且永续的；历史导入是可选的锦上添花，二者互不依赖。
+7. **环境自检**：运行 `scripts/check_environment.ps1`，按输出逐一解决缺失项（路径未提供、Chrome 未打开/未登录、缓存未构建、Python/OCR 依赖缺失、启动封装缺失等），把用户当电脑小白，给出可点击/可复制的操作步骤。
+
+### ChatGPT 历史对话学习引导（可选，一次性补数据）
+
+当用户要求补历史对话（“导入 ChatGPT 对话 / 学习 ChatGPT 里的对话 / 让回复越来越像我”），按以下步骤引导。**日常知识库成长不依赖本流程**，本流程仅用于一次性导入历史数据：
+
+1. 先确认 `_售后模板缓存` 已存在；没有则先按上方第 5 步完成缓存构建。
+2. **先给用户两个方案选择，说明利弊、耗时、复杂程度，让用户自行决定**（电脑小白也能听懂）：
+
+   | 方案 | 你需要做什么 | 预计耗时 | 复杂度 | 说明 |
+   |---|---|---|---|---|
+   | **A：自动抓取（备选）** | 只需在弹出的独立窗口登录一次 ChatGPT | 数百条对话约 1–3 小时（可分批续跑） | 低，全程 Codex 代跑 | 全自动但慢，受 ChatGPT 限流影响明显；仅建议在对话量少（几十条以内）时使用 |
+   | **B：浏览器扩展导出** | 在日常 Chrome 装一个导出扩展、点几下导出、把文件夹告诉 Codex | 约 5–15 分钟（下载扩展+导出） | 中，需你操作但步骤很少 | 导出快、不受限流影响，支持按项目导出；需要装第三方扩展（注意选择开源/评分高的扩展） |
+
+   **默认推荐 B**；若用户对话量很少（几十条）或不想装扩展，再选 A。
+3. **方案 A：自动抓取**。提前向用户说明：接下来会打开一个**独立的 ChatGPT 浏览器窗口**（与日常 Chrome 登录态隔离），只需要在其中登录一次；登录态会保留，之后增量抓取和定时任务都不需要再登录。学习范围是**全部亚马逊相关工作对话**（售后、运营、listing、竞品、库存、广告等），脚本会自动剔除明显的生活类内容。运行：
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File "_售后模板缓存\scripts\run_chatgpt_learning.ps1" -WorkOnly
+   ```
+   - `-WorkOnly`：只抓标题像亚马逊工作的对话（必须加，避免全量慢抓）；
+   - 若想按时间块分批跑，加 `-TimeBudgetSeconds 1800`（每 30 分钟一批，剩余自动续传）；
+   - 若脚本输出 `LOGIN_REQUIRED` 且已打开浏览器窗口：明确请用户在窗口中登录 ChatGPT（**不要代替用户输入账号密码**），登录后脚本自动继续抓取和学习，无需重跑。默认等待 10 分钟，超时输出 `LOGIN_TIMEOUT`，让用户登录后重跑一次即可。
+4. **方案 B：扩展导出**。按以下步骤引导（用户操作，Codex 只读结果）：
+   1. 让用户在日常 Chrome 打开 ChatGPT 并保持登录；
+   2. 让用户安装一个导出扩展（如 ChatGPT-Exporter / Bulk ChatGPT Export；建议开源且评分高）；
+   3. 让用户在扩展里执行导出（可只导出需要的项目，也可全量），把导出的 JSON/JSONL 文件夹路径告诉 Codex；
+   4. Codex 运行导入：
+      ```powershell
+      powershell -ExecutionPolicy Bypass -File "_售后模板缓存\scripts\import_chatgpt_export.ps1" -Source "<用户导出的文件夹>" -ConfigPath "_售后模板缓存\chatgpt_learning.json"
+      ```
+   5. 导入后继续构建学习库（下方第 5 步）。
+5. **构建学习库（A/B 通用）**：运行 `run_chatgpt_learning.ps1 -NoBrowser`（或直接运行 build_chatgpt_corpus.py）完成过滤、模板对、角色卡生成。
+6. 学习完成后查看输出统计（`RAW_FILES` / `WORK_CONVERSATIONS` / `TEMPLATE_PAIRS` / `IRRELEVANT_SKIPPED`），向用户简要汇报：导入了多少段亚马逊相关工作对话、提取了多少模板对、剔除了多少无关内容。
+7. 明确告知：**本流程是一次性补数据，不需要自动更新**。日常成长走“Codex 对话自动学习”；若用户仍希望定期抓取，再运行 `register_chatgpt_learning_task.ps1` 并说明限流风险。
+8. 提醒：新电脑无需手动跑 `setup_chatgpt_learning.ps1`；本地配置路径随电脑变化，云端只共享 `售后AI学习库` 数据（raw/corpus/feedback）。
+
+### Codex 对话自动学习（无论选不选 ChatGPT 学习都生效）
+
+每次在本工具中完成一条售后问答（命中任何来源或给出最终日文回复）后，**由 Codex 自动把这次处理沉淀为一条学习案例**：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "_售后模板缓存\scripts\record_codex_feedback.ps1" `
+  -Product "<产品>" -Issue "<顾客问题>" -ChineseLogic "<中文处理思路>" `
+  -JapaneseReply "<最终日文回复>" -Result "<sent/customer_satisfied>"
+```
+
+沉淀的案例写入 WPS 学习库 `feedback/`；下次运行 `build_chatgpt_corpus.py`（或增量学习）后进入检索库并更新角色卡。这样**每次对话都会让知识库变强**，与是否选择 ChatGPT 历史学习无关。
 
 ## 日常问答流程
 
@@ -114,12 +168,13 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
 - 只有在快查返回 NOT_FOUND 时才进入兜底检索；此时才允许继续读取。
 - 图片/识图相关才查 manual_image_index / xlsx_image_index / vision_index；用户没有要求图片时不碰这些索引。
 - 回答里一句话说明命中来源即可，不需要展示验证过程。
+- 命中 `CHATGPT` 层时，回复中标注来源 `CHATGPT:<对话标题>`，并参考 `corpus/persona.md` 的语气与分层逻辑；不要直接照抄整段历史回复，应结合当前订单/产品调整。
 - **默认不派子代理**：单条问答用 quick_query 单命令快查（<200ms）。只有快查返回 NOT_FOUND 且问题跨多产品/多文档时，才并行派 2 个子代理兜底（FAQ/kdocs 一组 + OCR/说明书一组），合并结果后回复。
 
 1. **快速索引路径（默认）**：运行 `powershell -ExecutionPolicy Bypass -File "_售后模板缓存\scripts\quick_query.ps1" -Product "<产品>" -Q "<问题>"`（单次调用，目标 <200ms）。**必须使用 `quick_query.ps1` 启动封装**，它固定调用 Codex 自带 Python，避免本机 PATH 中 WindowsApps 占位 `python.exe` 静默失败（无输出、退出码 1）导致查询卡住。脚本**只读预构建的规范化索引** `quick_index/`（由 `build_quick_index.py` 在缓存构建时生成）：
    - 索引内容：FAQ（问题+方法+模板）、**按页粒度的全部 pdf_ocr**、全部 kdocs、**规格书 xlsx + 规格书 PDF 内嵌文字层（说明书目录下“规格书”文件夹，含参数事实如线长/功率/配件）**、**参数层 params_norm.tsv（仅保留线长/尺寸/功率/电压/容量/配件等参数行）**，均已在构建时完成去空格+小写规范化；
    - OCR 索引按页记录（`ocr_pages.tsv`），命中可定位到具体页码；文件名带目录上下文（如 `杨永鑫\内置充气泵充气床\エアーベッド…`），中文产品名也能命中日文文件名说明书；
-   - **混合检索**：先查预编译 FAQ 查表（`faq_lookup.json`，产品+问题关键词直查完整模板）→ 同义词扩展（`synonyms.tsv`，数据驱动，支持**短语级扩展**，例如查询含“电源线”时自动补“電源コード/電源側コード/電源コード長/電源側コード長/本体側コード長”）→ 精确子串匹配 → rapidfuzz 模糊匹配 → BM25 排序，一次聚合 FAQ + OCR + kdocs + SPEC + PARAMS 五源并排序（命中词越长越优先）；
+   - **混合检索**：先查预编译 FAQ 查表（`faq_lookup.json`，产品+问题关键词直查完整模板）→ 同义词扩展（`synonyms.tsv`，数据驱动，支持**短语级扩展**，例如查询含“电源线”时自动补“電源コード/電源側コード/電源コード長/電源側コード長/本体側コード長”）→ 精确子串匹配 → rapidfuzz 模糊匹配 → BM25 排序，一次聚合 FAQ + OCR + kdocs + SPEC + PARAMS + CHATGPT 六源并排序（命中词越长越优先）；
    - 中文词与日文词通过同义词表互查（如“包装内容”→“セット内容/同梱物/内容品/付属品”、“配件”→“付属品/同梱”等）；
    - **未命中诊断**：`quick_query.ps1 -Q "<问题>" -Diagnose` 输出各层检查结果（OCR 页数/长度、PDF 文本层、页面图路径），并额外输出 `CANDIDATE_IMAGES`（与查询词相关的具体页面图路径），供定向识图直接使用；
    - 知识图谱 `kb_graph/`（nodes.tsv / edges.tsv / summary.json）用于快速回答“某产品有哪些资料/视频/页面图”和校验收录完整性；
@@ -168,6 +223,13 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
 ### scripts/
 - `py.ps1`：**统一 Python 启动封装**，固定使用 Codex 自带 Python（`C:\Users\ASUS\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`），找不到时回退 `py.exe`；所有 Python 脚本都通过它调用，不再直接敲 `python`。
 - `quick_query.ps1`：**日常问答默认入口**（产品+问题 → FAQ/OCR/kdocs 单命令快查，目标 <200ms，含去空格与同义词扩展），内部自动调用 `py.ps1 quick_query.py`。
+- `run_chatgpt_learning.ps1`：ChatGPT 历史对话学习一键管线（抓取 → 过滤 → 构建角色卡/检索库），未登录时安全停止。
+- `capture_chatgpt_conversations.ps1`：通过已登录的持久浏览器会话抓取 ChatGPT 全部对话（按 ID + 更新时间增量去重），写入 WPS 云同步 `raw/`。
+- `build_chatgpt_corpus.py`：分析 raw 对话，剔除无关内容，生成 `corpus/chatgpt_norm.tsv`（检索层）、`template_pairs.tsv`（中文→日文模板对）、`persona.md`（虚拟客服角色卡）、`relevance_report.tsv`（过滤审计）。
+- `record_feedback.ps1`：把确认成功的售后案例写入反馈库（问题 + 中文逻辑 + 最终日文回复 + 结果），重跑学习后角色卡会成长。
+- `record_codex_feedback.ps1`：**每次售后问答后自动沉淀**本次处理为学习案例（来源 `codex_conversation`），让知识库随对话变强。
+- `import_chatgpt_export.py` / `import_chatgpt_export.ps1`：**方案 B**——把浏览器扩展导出的 ChatGPT JSON/JSONL 导入学习库 raw 目录。
+- `register_chatgpt_learning_task.ps1`：注册 Windows 计划任务实现每日/每周自动学习（默认注册为禁用，确认后再启用）。
 - `check_environment.ps1`：环境自检（路径、缓存、Chrome 会话、Python 依赖、启动封装）。
 - `build_install_zip.ps1`：重建 `售后知识库Skill安装包\after-sales-kb.zip`（技能更新后运行，新电脑安装到的才是最新版）。
 - `miss_tracker.py`：跨对话未命中计数器（status/record/acknowledge/update-done/reset）。
@@ -180,11 +242,13 @@ description: 日本站售后知识库。使用本地说明书/演示视频文件
 - `examples.md`：两个完整使用案例（在线表格模板查询、本地说明书查询）。
 - `troubleshooting.md`：电脑小白向的分步故障排查（路径缺失、文档未打开、登录过期、OCR 慢/空、缓存未建等）。
 - `cache-build.md`：首次全量缓存与增量更新的具体脚本命令。
+- `chatgpt-learning.md`：ChatGPT 历史对话学习的完整流程（首次学习/增量/反馈/定时/故障排查）。
 
 ### assets/bootstrap/
 - `settings.json`：初始配置模板（自动更新向导配置、图片策略、未命中阈值3）。
 - `miss_counter.json`：未命中计数器初始文件。
-- 初始化缓存目录时，将这两个文件复制到 `_售后模板缓存/` 下。
+- `chatgpt_learning.json`：ChatGPT 学习库配置（WPS 云同步路径、会话名、自动更新）。
+- 初始化缓存目录时，将这三个文件复制到 `_售后模板缓存/` 下。
 
 ## 重要提醒
 
