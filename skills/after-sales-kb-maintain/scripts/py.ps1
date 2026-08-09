@@ -14,8 +14,9 @@ if (Test-Path -LiteralPath $runtimeRoot) {
 foreach ($candidate in $candidates) {
     try {
         & $candidate @Arguments
-        exit $LASTEXITCODE
+        $pythonExit = $LASTEXITCODE
     } catch { continue }
+    exit $pythonExit
 }
 Write-Error "未找到可用 Python。请让 Codex 检查工作区运行时或安装 Python 3。"
 exit 1

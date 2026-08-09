@@ -71,8 +71,10 @@ function Invoke-Stage {
 function Invoke-Python {
     param([string]$Name, [string[]]$Arguments = @())
     $scriptPath = Join-Path $PSScriptRoot $Name
-    & (Join-Path $PSScriptRoot "py.ps1") $scriptPath @Arguments 2>&1 | ForEach-Object { Add-Log ([string]$_) }
-    if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
+    $pythonOutput = & (Join-Path $PSScriptRoot "py.ps1") $scriptPath @Arguments 2>&1
+    $pythonExit = $LASTEXITCODE
+    $pythonOutput | ForEach-Object { Add-Log ([string]$_) }
+    if ($pythonExit -ne 0) { throw "$Name failed with exit code $pythonExit" }
 }
 
 try {
