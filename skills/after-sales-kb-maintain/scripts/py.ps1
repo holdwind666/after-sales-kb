@@ -1,10 +1,12 @@
 ﻿param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
 $ErrorActionPreference = "Continue"
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 $candidates = [System.Collections.Generic.List[string]]::new()
-foreach ($commandName in @("py.exe", "python.exe", "python3.exe")) {
+foreach ($commandName in @("python.exe", "py.exe", "python3.exe")) {
     $cmd = Get-Command $commandName -ErrorAction SilentlyContinue
-    if ($cmd -and $cmd.Source -and -not $candidates.Contains($cmd.Source)) { $candidates.Add($cmd.Source) }
+    if ($cmd -and $cmd.Source -and $cmd.Source -notmatch '\\WindowsApps\\' -and -not $candidates.Contains($cmd.Source)) { $candidates.Add($cmd.Source) }
 }
 $runtimeRoot = Join-Path $env:USERPROFILE ".cache\codex-runtimes"
 if (Test-Path -LiteralPath $runtimeRoot) {
