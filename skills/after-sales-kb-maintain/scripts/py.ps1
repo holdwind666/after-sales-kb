@@ -1,6 +1,6 @@
 ﻿param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $candidates = [System.Collections.Generic.List[string]]::new()
 foreach ($commandName in @("py.exe", "python.exe", "python3.exe")) {
     $cmd = Get-Command $commandName -ErrorAction SilentlyContinue
@@ -15,8 +15,13 @@ foreach ($candidate in $candidates) {
     try {
         & $candidate @Arguments
         $pythonExit = $LASTEXITCODE
-    } catch { continue }
-    exit $pythonExit
+    } catch {
+        Write-Output "PYTHON_CANDIDATE_FAILED=$candidate|$($_.Exception.Message)"
+        continue
+    }
+    $global:LASTEXITCODE = $pythonExit
+    return
 }
-Write-Error "未找到可用 Python。请让 Codex 检查工作区运行时或安装 Python 3。"
-exit 1
+Write-Error "未找到可用 Python。请让 Codex 检查工作区运行时或安装 Python 3。" -ErrorAction Continue
+$global:LASTEXITCODE = 1
+return
