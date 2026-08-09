@@ -162,8 +162,12 @@ def main():
             "video_count": len(video_files),
             "videos": "|".join(video_files[:6]),
         })
+    fieldnames = [
+        "product", "keywords", "faq", "ocr_count", "ocr_files",
+        "page_count", "pages", "video_count", "videos",
+    ]
     with OUT.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()), delimiter="\t")
+        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t")
         writer.writeheader()
         writer.writerows(rows)
     print(f"done: {len(rows)} products -> {OUT}")

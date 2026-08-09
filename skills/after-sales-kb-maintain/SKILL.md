@@ -12,7 +12,7 @@ description: 安装、初始化、检查、更新和修复日本站售后知识�
 1. 运行 `scripts/initialize.ps1`。已有有效配置时直接复用。
 2. 脚本返回 `NEED_DATA_ROOT` 时，询问本机“说明书与视频”资料根目录；返回多个候选时让用户选择。
 3. 需要权限的 WPS 资料只让用户本人在浏览器登录。保存链接或本机同步目录，不保存密码、Cookie 或令牌。
-4. 快速索引存在时运行代表性查询完成验收；缺失时按 [references/cache-build.md](references/cache-build.md) 建立首次全量缓存。
+4. 运行 `scripts/build_cache.ps1 -Mode Auto`：已有缓存只刷新索引，空缓存自动执行可恢复的完整构建。
 5. 运行 `scripts/check_environment.ps1`，逐项解决失败项；以 `ENVIRONMENT_OK` 为完成标准。
 
 每台电脑把配置写到 `%LOCALAPPDATA%\AfterSalesSupport\config\settings.json`。共享资料中不写 Windows 用户名、盘符或本机绝对路径。
@@ -34,6 +34,10 @@ description: 安装、初始化、检查、更新和修复日本站售后知识�
 - 现有资料根目录下的 `_售后模板缓存` 有有效索引时优先复用，避免重复构建；新电脑默认使用 `%LOCALAPPDATA%\AfterSalesSupport\cache`。
 - 图片语义索引、全量视频抽帧和在线表整表下载只在用户明确要求或首次构建确实需要时运行。
 - 详细构建顺序读取 [references/cache-build.md](references/cache-build.md)。故障处理读取 [references/troubleshooting.md](references/troubleshooting.md)。
+
+## 一键安装验收
+
+从 GitHub 下载仓库后，优先运行仓库的 `installer/bootstrap.ps1`，不要分别让用户执行多个脚本。它负责校验并安装三个 Skills、发现资料目录、初始化、完整或增量构建、环境检查和代表性查询。只有输出 `READY_FOR_SUPPORT` 与 `BOOTSTRAP_COMPLETE` 才能报告可用；`NEED_DATA_ROOT` 或多个候选时只询问一次正确路径，再用 `-DataRoot` 重跑同一入口。
 
 ## 更新与修复
 
