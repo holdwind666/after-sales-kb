@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "suite": "after-sales-support-suite",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "channel": "stable",
   "skills": [
     "skills/after-sales-reply",

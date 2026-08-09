@@ -2,8 +2,15 @@
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("after-sales-smoke-" + [guid]::NewGuid().ToString("N"))
 $originalLocalAppData = $env:LOCALAPPDATA
+$originalConfigPath = $env:AFTERSALES_CONFIG_PATH
+$originalDataRoot = $env:AFTERSALES_DATA_ROOT
+$originalCacheDir = $env:AFTERSALES_CACHE_DIR
 
 try {
+    $readme = Get-Content -LiteralPath (Join-Path $repoRoot "README.md") -Encoding UTF8 -Raw
+    $shortTrigger = "请帮我安装并初始化日本站售后知识库 Skill：`nhttps://github.com/holdwind666/after-sales-kb.git"
+    if (-not $readme.Replace("`r`n", "`n").Contains($shortTrigger)) { throw "README short install trigger missing" }
+
     $env:LOCALAPPDATA = Join-Path $testRoot "localappdata"
     $dataRoot = Join-Path $testRoot "测试说明书与视频"
     $cacheRoot = Join-Path $testRoot "cache"
@@ -59,9 +66,38 @@ try {
     $query = & (Join-Path $skillRoot "after-sales-kb-maintain\scripts\quick_query.ps1") -Product "测试产品" -Q "无法充电"
     if (-not ($query | Where-Object { $_ -match "APPROVED" })) { throw "approved case was not searchable" }
 
+    # A computer with manuals but no WPS cache must still finish as a usable
+    # local node without requiring a special opt-in flag.
+    $env:LOCALAPPDATA = Join-Path $testRoot "local-only-appdata"
+    $env:AFTERSALES_CONFIG_PATH = $null
+    $env:AFTERSALES_DATA_ROOT = $null
+    $env:AFTERSALES_CACHE_DIR = $null
+    $localOnlyData = Join-Path $testRoot "本地模式说明书与视频"
+    $localOnlyCache = Join-Path $testRoot "local-only-cache"
+    $localOnlySkills = Join-Path $testRoot "local-only-skills"
+    foreach ($path in @(
+        (Join-Path $localOnlyData "说明书"),
+        (Join-Path $localOnlyData "演示视频"),
+        (Join-Path $localOnlyData "售后常用图片"),
+        (Join-Path $localOnlyCache "pdf_ocr"),
+        $localOnlySkills
+    )) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
+    $manualText = "===== PAGE 1 =====`n便携式车载马桶の組み立て方法。四隅のロックを開き、本体に処理袋をかけ、座面を設置します。"
+    $manualFixture = Join-Path $localOnlyCache "pdf_ocr\便携式车载马桶.txt"
+    [IO.File]::WriteAllText($manualFixture, $manualText, (New-Object Text.UTF8Encoding($false)))
+    if (-not (Test-Path -LiteralPath $manualFixture -PathType Leaf)) { throw "local-only manual fixture missing" }
+    $localOnlyOutput = & $bootstrap -DestinationRoot $localOnlySkills -DataRoot $localOnlyData -CacheRoot $localOnlyCache -BuildMode Full -SkipPdfPages -ValidationProduct "便携式车载马桶" -ValidationQuery "組み立て方法"
+    if ($LASTEXITCODE -ne 0) { throw "local-only bootstrap failed: $LASTEXITCODE`n$($localOnlyOutput -join "`n")" }
+    foreach ($expected in @("WPS_CACHE=NOT_AVAILABLE", "KB_STATE=READY_LOCAL_ONLY", "READY_FOR_SUPPORT", "BOOTSTRAP_COMPLETE")) {
+        if (-not ($localOnlyOutput | Where-Object { $_ -eq $expected })) { throw "local-only bootstrap missing: $expected" }
+    }
+
     Write-Output "SMOKE_OK"
 } finally {
     $env:LOCALAPPDATA = $originalLocalAppData
+    $env:AFTERSALES_CONFIG_PATH = $originalConfigPath
+    $env:AFTERSALES_DATA_ROOT = $originalDataRoot
+    $env:AFTERSALES_CACHE_DIR = $originalCacheDir
     $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     $target = [IO.Path]::GetFullPath($testRoot)
     if ($target.StartsWith($tempBase, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $testRoot)) {

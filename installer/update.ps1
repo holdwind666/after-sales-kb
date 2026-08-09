@@ -1,6 +1,6 @@
 ﻿param(
     [string]$RepoUrl = "https://github.com/holdwind666/after-sales-kb.git",
-    [string]$Ref = "v2.0.1",
+    [string]$Ref = "v2.0.2",
     [string]$SourceRoot = "",
     [string]$DestinationRoot = "",
     [switch]$SkipInitialization

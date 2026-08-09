@@ -111,12 +111,14 @@ if ($ValidationQuery) {
 
 $meta = Get-Content -LiteralPath (Join-Path ([string]$config.cache_root) "quick_index\meta.json") -Encoding UTF8 -Raw | ConvertFrom-Json
 $wpsStatus = if ([int]$meta.counts.kdocs -gt 0) { "READY" } else { "NOT_AVAILABLE" }
+$kbState = if ($wpsStatus -eq "READY") { "READY_WITH_WPS" } else { "READY_LOCAL_ONLY" }
 Write-Output "INSTALLED_VERSION=$($manifest.version)"
 Write-Output "DATA_ROOT=$($config.data_root)"
 Write-Output "CACHE_ROOT=$($config.cache_root)"
 Write-Output "WPS_CACHE=$wpsStatus"
-if ($wpsStatus -ne "READY" -and -not $AllowWithoutWps) {
-    Stop-Bootstrap -Code "ACTION_REQUIRED=未找到WPS售后表缓存或本地XLSX副本，请把日本站售后对应方案表保存到资料目录后重跑；若明确只使用说明书，可加-AllowWithoutWps。" -ExitCode 13
+Write-Output "KB_STATE=$kbState"
+if ($kbState -eq "READY_LOCAL_ONLY" -and -not $AllowWithoutWps) {
+    Write-Output "ACTION_RECOMMENDED=当前电脑未找到可访问的WPS售后表缓存；本地说明书知识库已经可用，取得WPS本地XLSX或缓存后再次运行即可升级。"
 }
 Write-Output "READY_FOR_SUPPORT"
 Write-Output "BOOTSTRAP_COMPLETE"

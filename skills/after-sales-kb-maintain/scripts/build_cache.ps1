@@ -40,7 +40,7 @@ $script:CurrentStage = "start"
 function Write-BuildState {
     param([string]$Status, [string]$Message = "")
     $payload = [ordered]@{
-        suite_version = "2.0.1"
+        suite_version = "2.0.2"
         mode = $Mode
         status = $Status
         current_stage = $script:CurrentStage

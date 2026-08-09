@@ -105,7 +105,7 @@ $allowLegacyHistory = if ($existing -and $existing.learning -and $existing.learn
 
 $settings = [ordered]@{
     schema_version = 2
-    suite_version = "2.0.1"
+    suite_version = "2.0.2"
     device_id = $deviceId
     device_name = $deviceName
     data_root = $DataRoot

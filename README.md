@@ -6,11 +6,14 @@
 
 在 Codex 中发送：
 
-> 请从 https://github.com/holdwind666/after-sales-kb.git 安装或更新全部售后客服 Skills，并运行 installer/bootstrap.ps1 完成初始化、知识库构建和代表性查询验收；保留本机配置与缓存。只有看到 READY_FOR_SUPPORT 和 BOOTSTRAP_COMPLETE 才告诉我安装完成；找不到名称包含“说明书与视频”的资料目录时，只询问我一次正确路径并继续执行。
+```text
+请帮我安装并初始化日本站售后知识库 Skill：
+https://github.com/holdwind666/after-sales-kb.git
+```
 
-Codex 会下载公开仓库并运行 `installer/bootstrap.ps1`。用户不需要下载 ZIP、安装 EXE、打开 PowerShell或手动复制文件。入口会依次完成校验、安装、路径发现、初始化、缓存构建、环境检查和代表性查询；安装后通常在下一轮对话生效，未出现时重启一次 Codex。
+仓库内的维护 Skill 会继续引导 Codex 下载并运行 `installer/bootstrap.ps1`。用户不需要下载 ZIP、安装 EXE、打开 PowerShell或手动复制文件。入口会依次完成校验、安装、路径发现、初始化、缓存构建、环境检查和代表性查询；安装后通常在下一轮对话生效，未出现时重启一次 Codex。
 
-已有 `_售后模板缓存` 时只刷新快速索引，通常很快；全新电脑没有缓存时会完整处理本地 PDF，耗时取决于说明书数量，中断后再次运行会从已有结果继续。WPS 表格若已同步为本地 XLSX 会自动导入；只有既没有本地副本也没有既有 WPS 缓存时，流程会停在 `WPS_CACHE=NOT_AVAILABLE` 并提示补充资料，不会把它伪装成完整可用。
+已有 `_售后模板缓存` 时只刷新快速索引，通常很快；全新电脑没有缓存时会完整处理本地 PDF，耗时取决于说明书数量，中断后再次运行会从已有结果继续。WPS 表格若已同步为本地 XLSX 会自动导入；没有 WPS 缓存、登录的是其他账号或暂时无权限时，流程会先完成本地说明书知识库并进入 `READY_LOCAL_ONLY`，之后取得 WPS 资料再升级为 `READY_WITH_WPS`。
 
 同一个 Codex 账号登录多台电脑不会自动同步本地 Skill 文件。每台新电脑都发送一次上面的指令即可；WPS 账号可以相同，本机路径、缓存、日志和设备标识各自独立。
 
