@@ -48,6 +48,8 @@ $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $backupRoot = Join-Path $supportHome "backups\$stamp\skills"
 $stageRoot = Join-Path $DestinationRoot (".after-sales-stage-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
+$originals = @{}
+$replaced = [System.Collections.Generic.List[string]]::new()
 
 try {
     foreach ($relative in $manifest.skills) {
@@ -61,15 +63,31 @@ try {
         $name = Split-Path -Leaf ([string]$relative)
         $target = Join-Path $DestinationRoot $name
         Assert-ChildPath -Parent $DestinationRoot -Child $target
-        if (Test-Path -LiteralPath $target) {
+        $hadOriginal = Test-Path -LiteralPath $target
+        $originals[$name] = $hadOriginal
+        if ($hadOriginal) {
             New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
             Copy-Item -LiteralPath $target -Destination (Join-Path $backupRoot $name) -Recurse -Force
+            $replaced.Add($name)
             Remove-Item -LiteralPath $target -Recurse -Force
+        } else {
+            $replaced.Add($name)
         }
         Move-Item -LiteralPath (Join-Path $stageRoot $name) -Destination $target
     }
 } catch {
-    throw
+    $installError = $_
+    foreach ($name in @($replaced)) {
+        $target = Join-Path $DestinationRoot $name
+        Assert-ChildPath -Parent $DestinationRoot -Child $target
+        if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue }
+        $backup = Join-Path $backupRoot $name
+        if ($originals[$name] -and (Test-Path -LiteralPath $backup)) {
+            Copy-Item -LiteralPath $backup -Destination $target -Recurse -Force
+        }
+    }
+    Write-Output "INSTALL_ROLLED_BACK"
+    throw $installError
 } finally {
     if (Test-Path -LiteralPath $stageRoot) {
         Assert-ChildPath -Parent $DestinationRoot -Child $stageRoot
@@ -100,7 +118,10 @@ if (-not $SkipInitialization) {
     $init = Join-Path $DestinationRoot "after-sales-kb-maintain\scripts\initialize.ps1"
     & $init -DataRoot $DataRoot -WpsUrl $WpsUrl -WpsLearningRoot $WpsLearningRoot
     $initExit = $LASTEXITCODE
-    if ($initExit -notin @(0, 2, 3)) { exit $initExit }
+    if ($initExit -ne 0) {
+        Write-Output "INSTALL_NEEDS_INPUT"
+        exit $initExit
+    }
 }
 Write-Output "INSTALL_COMPLETE"
 exit 0

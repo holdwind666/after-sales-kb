@@ -15,7 +15,12 @@ if (Test-AfterSalesDataRoot -Path ([string]$config.data_root)) {
 $cache = [string]$config.cache_root
 if (Test-Path -LiteralPath $cache -PathType Container) { Write-Output "CACHE_ROOT=OK" } else { Write-Output "CACHE_ROOT=MISSING"; $failed++ }
 if (Test-Path -LiteralPath (Join-Path $cache "quick_index\meta.json") -PathType Leaf) {
-    Write-Output "QUICK_INDEX=READY"
+    try {
+        $meta = Get-Content -LiteralPath (Join-Path $cache "quick_index\meta.json") -Encoding UTF8 -Raw | ConvertFrom-Json
+        $searchable = [int]$meta.counts.faq + [int]$meta.counts.ocr_pages + [int]$meta.counts.kdocs + [int]$meta.counts.spec
+        if ($searchable -gt 0) { Write-Output "QUICK_INDEX=READY"; Write-Output "SEARCHABLE_ROWS=$searchable" }
+        else { Write-Output "QUICK_INDEX=EMPTY"; $failed++ }
+    } catch { Write-Output "QUICK_INDEX=INVALID"; $failed++ }
 } else { Write-Output "QUICK_INDEX=BUILD_REQUIRED"; $failed++ }
 
 $pyOut = & (Join-Path $PSScriptRoot "py.ps1") -c "import sys; print(sys.version_info.major)" 2>$null
@@ -29,7 +34,8 @@ if (-not $pdftoppm) {
     }
 }
 Write-Output "PDF_RENDERER=$(if ($pdftoppm) { 'OK' } else { 'OPTIONAL_MISSING' })"
-Write-Output "WPS_LINK=$(if ($config.wps_url) { 'CONFIGURED' } else { 'NOT_CONFIGURED' })"
+$kdocsCount = if (Test-Path -LiteralPath (Join-Path $cache "kdocs")) { @(Get-ChildItem -LiteralPath (Join-Path $cache "kdocs") -File -Filter "*.txt" -ErrorAction SilentlyContinue).Count } else { 0 }
+Write-Output "WPS_CACHE=$(if ($kdocsCount -gt 0) { 'READY' } elseif ($config.wps_url) { 'LINK_ONLY' } else { 'NOT_AVAILABLE' })"
 Write-Output "LEARNING_SYNC=$(if ($config.cloud_learning_root -and (Test-Path -LiteralPath $config.cloud_learning_root)) { 'READY' } else { 'LOCAL_ONLY' })"
 
 if ($failed -eq 0) { Write-Output "ENVIRONMENT_OK"; exit 0 }

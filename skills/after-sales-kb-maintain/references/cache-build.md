@@ -5,23 +5,20 @@
 ## 首次构建
 
 1. 运行 `scripts/initialize.ps1` 并确认 `DATA_ROOT`、`CACHE_ROOT`。
-2. 抓取用户已授权的 WPS 售后表文本到 `cache_root/kdocs`；需要大型 XLSX 图片索引时再下载整表。
-3. 对说明书 PDF 建立文字层/OCR 和页面图，随后运行 `build_manual_images.py`。
-4. 建立产品、FAQ 与事实层：`build_products.py`、`build_faq_index.py`、`build_facts.py`。
-5. 建立快速层：`build_quick_index.py`、`build_faq_lookup.py`、`build_kb_graph.py`、`build_gap_report.py`。
-6. 运行 `check_environment.ps1` 和两个代表性 `quick_query.ps1` 查询；`ENVIRONMENT_OK` 且查询命中才算完成。
+2. 运行 `scripts/build_cache.ps1 -Mode Auto`。它自动复用旧缓存；空缓存执行 WPS/XLSX 文本导入、视频索引、说明书文字层/OCR、PDF 页图和全部派生索引。
+3. 中断后重复同一命令。已完成的 OCR 与页图会跳过，状态保存在 `cache_root/build_state/last_build.json`，日志保存在 `cache_root/logs/`。
+4. 运行 `check_environment.ps1` 和代表性 `quick_query.ps1`；`ENVIRONMENT_OK` 且查询命中才算完成。
 
 使用安装 Skill 中的 `py.ps1` 启动 Python 脚本，例如：
 
 ```powershell
 $scriptRoot = Join-Path $env:USERPROFILE ".agents\skills\after-sales-kb-maintain\scripts"
-& (Join-Path $scriptRoot "py.ps1") (Join-Path $scriptRoot "build_quick_index.py")
-& (Join-Path $scriptRoot "py.ps1") (Join-Path $scriptRoot "build_faq_lookup.py")
+& (Join-Path $scriptRoot "build_cache.ps1") -Mode Auto
 ```
 
 ## 增量构建
 
-比较文件路径、大小和修改时间，只重建新增或变化的源文件，再刷新快速索引和缺口报告。日常问答不触发全量 OCR、全量视频抽帧、整表下载或全磁盘扫描。
+`-Mode Refresh` 只重新导入本地售后表并刷新派生索引；`-Mode Full` 还补齐缺少的 PDF OCR 和页图。日常问答不触发构建。
 
 ## 视觉索引
 

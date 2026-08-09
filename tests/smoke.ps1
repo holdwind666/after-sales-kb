@@ -13,15 +13,19 @@ try {
         (Join-Path $dataRoot "说明书"),
         (Join-Path $dataRoot "演示视频"),
         (Join-Path $dataRoot "售后常用图片"),
-        (Join-Path $cacheRoot "quick_index"),
         $cloudRoot,
         $skillRoot
     )) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
-    '{"generated_at":"test"}' | Set-Content -LiteralPath (Join-Path $cacheRoot "quick_index\meta.json") -Encoding UTF8
+    $fixture = @"
+日期`t问题`t回复模板
+2026-08-09`t无法充电`t別のUSBケーブルで充電をお試しください。
+"@
+    [IO.File]::WriteAllText((Join-Path $dataRoot "kdocs_日本站售后对应方案表_测试产品.txt"), $fixture, (New-Object Text.UTF8Encoding($false)))
 
-    $installer = Join-Path $repoRoot "installer\install.ps1"
-    & $installer -DestinationRoot $skillRoot -DataRoot $dataRoot -WpsLearningRoot $cloudRoot
-    if ($LASTEXITCODE -ne 0) { throw "install failed: $LASTEXITCODE" }
+    $bootstrap = Join-Path $repoRoot "installer\bootstrap.ps1"
+    $bootstrapOutput = & $bootstrap -DestinationRoot $skillRoot -DataRoot $dataRoot -CacheRoot $cacheRoot -WpsLearningRoot $cloudRoot -BuildMode Full -SkipPdfPages -ValidationProduct "测试产品" -ValidationQuery "无法充电"
+    if ($LASTEXITCODE -ne 0) { throw "bootstrap failed: $LASTEXITCODE`n$($bootstrapOutput -join "`n")" }
+    if (-not ($bootstrapOutput | Where-Object { $_ -eq "READY_FOR_SUPPORT" })) { throw "bootstrap did not report ready" }
     foreach ($name in @("after-sales-reply", "after-sales-kb-maintain", "after-sales-learning-review")) {
         if (-not (Test-Path -LiteralPath (Join-Path $skillRoot "$name\SKILL.md"))) { throw "missing installed skill: $name" }
     }
@@ -33,6 +37,7 @@ try {
     & (Join-Path $skillRoot "after-sales-kb-maintain\scripts\initialize.ps1") -DataRoot $dataRoot -CacheRoot $cacheRoot -WpsLearningRoot $cloudRoot | Out-Null
     $config2 = Get-Content -LiteralPath $configPath -Encoding UTF8 -Raw | ConvertFrom-Json
     if ([string]$config2.device_id -ne $firstDeviceId) { throw "device id changed" }
+    if (-not (Test-Path -LiteralPath (Join-Path $cacheRoot "quick_index\meta.json"))) { throw "full build did not create quick index" }
 
     & (Join-Path $repoRoot "installer\update.ps1") -SourceRoot $repoRoot -DestinationRoot $skillRoot -SkipInitialization
     if ($LASTEXITCODE -ne 0) { throw "idempotent update failed: $LASTEXITCODE" }
